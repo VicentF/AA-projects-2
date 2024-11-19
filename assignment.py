@@ -70,7 +70,6 @@ class Model:
         Y_pred = self.predict(X_test)
         Y_pred = pd.DataFrame(Y_pred, columns=['0'])
         Y_pred.insert(0, 'id', np.arange(0, len(Y_pred)))
-        print(Y_pred)
         Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
         return
 
@@ -85,6 +84,48 @@ class LinearModelTrainTestVal(Model):
 
     def __repr__(self):
         return
+
+class LinearModelCV(Model):
+    def __init__(self, X_train, Y_train, kf):
+        super().__init__(X_train, Y_train, None, None)
+        self.kf = kf  # K-Fold cross-validator
+        self.X_train = self.normalize(X_train)  # Normalize the data
+        self.model = LinearRegression()  # Initialize the Linear Regression model
+        self.train()
+        self.logs()
+        return
+
+    def __repr__(self):
+        return "LinearModelCV"
+
+    def normalize(self, X_train, std_scaler=None):
+        if std_scaler is None:
+            std_scaler = self.std_scaler
+        X_train = std_scaler.fit_transform(X_train)
+        return X_train
+
+    def train(self):
+        self.cv_scores = []
+        self.Y_train = self.Y_train.reset_index(drop=True)
+        for train_index, val_index in self.kf.split(self.X_train):
+            X_cv_train, X_cv_val = self.X_train[train_index], self.X_train[val_index]
+            Y_cv_train, Y_cv_val = self.Y_train[train_index], self.Y_train[val_index]
+            self.model.fit(X_cv_train, Y_cv_train)
+            predictions = self.model.predict(X_cv_val)
+            score = error_metric(Y_cv_val, predictions,0)
+            self.cv_scores.append(score)
+
+    def logs(self):
+        print(f"{self.__class__.__name__} training took {round(time.time() - self.start_time, 2)} seconds")
+        print(self.__repr__())
+
+        print("Cross-Validation Results:")
+        for i, score in enumerate(self.cv_scores):
+            print(f"Fold {i + 1} Score: {score}")
+        print(f"Average Cross-Validation Score: {np.mean(self.cv_scores)}")
+
+    def final_model_evaluation(self, file_name=""):
+        super().final_model_evaluation(file_name)
 
 
 
@@ -104,7 +145,7 @@ def train_val_test_split(X, Y, test_size=0.1, val_size=0.1, random_state=42):
     return X_train, Y_train, X_val, Y_val, X_test, Y_test
 
 # Creates a train, cross-validation and test split
-def train_cv_test_split(X, Y, test_size=0.2, n_splits=5, random_state=42):
+def train_cv_test_split(X, Y, test_size=0.1, n_splits=5, random_state=42):
     # Split into Train + Test
     X_train, X_test, Y_train, Y_test = train_test_split(
         X, Y, test_size=test_size, random_state=random_state
@@ -113,7 +154,7 @@ def train_cv_test_split(X, Y, test_size=0.2, n_splits=5, random_state=42):
     # Create K-Fold cross-validator for the training set
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
-    return X_train, X_test, Y_train, Y_test, kf
+    return X_train, Y_train, X_test, Y_test, kf
 
 # Creates our X and Y after dropping missing values & the censored data
 def dropMissingCensored(df):
@@ -126,7 +167,6 @@ def dropMissingCensored(df):
 
     Y = df_cleaned['SurvivalTime']
     X = df_cleaned.drop(columns=['SurvivalTime', 'Censored']).rename(columns = {'Unnamed: 0':'id'})
-    print(X)
     df = df.rename(columns={'old_column_name': 'new_column_name'})
 
 
@@ -156,10 +196,16 @@ def main():
 
     df = pd.read_csv('Datasets/train_data.csv')
     X, Y = dropMissingCensored(df)
-    X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
 
-    Model = LinearModelTrainTestVal(X_train, Y_train, X_val, Y_val)
-    Model.final_model_evaluation("baseline-submission-00")
+    #For LinearModel with train_val_test
+    X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
+    Model1 = LinearModelTrainTestVal(X_train,Y_train,X_val,Y_val)
+
+    #For LinearModel with CrossValidation
+    X_train, Y_train, X_val, Y_val, kf = train_cv_test_split(X,Y)
+    Model2 = LinearModelCV(X_train, Y_train, kf)
+
+    #Model.final_model_evaluation("baseline-submission-00")
     return
 
 
