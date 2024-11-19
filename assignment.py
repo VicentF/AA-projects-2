@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split, KFold
 from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.neighbors import KNeighborsRegressor
 
 # cMSE, the new metric for evaluation
 def error_metric(y, y_hat, c):
@@ -42,6 +43,7 @@ class Model:
     def normalize(self, X_train, X_val, std_scaler=None):
         if std_scaler is None:
             std_scaler = self.std_scaler
+        print(std_scaler)
         X_train = std_scaler.fit_transform(X_train)
         X_val = std_scaler.transform(X_val)
         return X_train, X_val
@@ -55,7 +57,7 @@ class Model:
     def logs(self):
         print(f"{self.__class__.__name__} training took {round(time.time() - self.start_time, 2)} seconds")
         print(self.__repr__())
-        print(f"cMSE (validation): {error_metric(self.Y_val, self.predict(self.X_val), self.X_val.get('Censored', 0))}")
+        print(f"cMSE (validation): {error_metric(self.Y_val, self.predict(self.X_val), 0)}")
 
         return
 
@@ -112,7 +114,8 @@ class LinearModelCV(Model):
             Y_cv_train, Y_cv_val = self.Y_train[train_index], self.Y_train[val_index]
             self.model.fit(X_cv_train, Y_cv_train)
             predictions = self.model.predict(X_cv_val)
-            score = error_metric(Y_cv_val, predictions,0)
+            print(X_cv_val)
+            score = error_metric(Y_cv_val, predictions, 0)
             self.cv_scores.append(score)
 
     def logs(self):
@@ -128,6 +131,72 @@ class LinearModelCV(Model):
         super().final_model_evaluation(file_name)
 
 
+class PolynomialModel(Model):
+    def __init__(self, X_train, Y_train, X_val, Y_val, degrees):
+        super().__init__(X_train, Y_train, X_val, Y_val)
+        self.degrees = degrees
+        # Train the model
+        self.poly = None
+        self.best_degree = -1
+        self.train()
+        self.logs()
+        return
+
+    def __repr__(self):
+        return f"PolynomialModel: degree={self.best_degree} ({self.model.n_features_in_} features)"
+
+    def train(self):
+        best_cMSE = float('inf')
+        for degree in self.degrees:
+            poly = PolynomialFeatures(degree=degree)
+            X_train, X_val = self.normalize(self.X_train, self.X_val, poly)
+            std_scaler = StandardScaler()
+            X_train, X_val = self.normalize(X_train, X_val, std_scaler)
+            model = LinearRegression()
+            model.fit(X_train, self.Y_train)
+            cMSE = error_metric(model.predict(X_val), self.Y_val, 0)
+            print(f"Degree {degree} ({model.n_features_in_} features) cMSE: {cMSE}\n")
+            if cMSE < best_cMSE:
+                best_cMSE = cMSE
+                self.model = model
+                self.best_degree = degree
+                self.poly = poly
+                self.std_scaler = std_scaler
+        return
+
+    def predict(self, X):
+        return super().predict(self.poly.transform(X))
+
+
+class KNNModel(Model):
+    def __init__(self, X_train, Y_train, X_val, Y_val, ks):
+        super().__init__(X_train, Y_train, X_val, Y_val)
+        self.X_train = self.std_scaler.fit_transform(X_train)  # stores validation without normalization
+        self.ks = ks
+        self.knn = None
+        self.best_k = -1
+        self.train()
+        self.logs()
+        return
+
+    def __repr__(self):
+        return f"KNNModel: k={self.best_k}"
+
+    def train(self):
+        best_cMSE = float('inf')
+        for k in self.ks:
+            knn = KNeighborsRegressor(n_neighbors=k)
+            model = knn
+            model.fit(self.X_train, self.Y_train)
+            y_pred_val = model.predict(self.std_scaler.transform(self.X_val))   # automatically normalizes
+            cMSE = error_metric(y_pred_val, self.Y_val,0)
+            print(f"KNN k={k} cMSE: {cMSE}\n")
+            if cMSE < best_cMSE:
+                best_cMSE = cMSE
+                self.model = model
+                self.knn = knn
+                self.best_k = k
+        return
 
 # Creates a train,validation and test split
 def train_val_test_split(X, Y, test_size=0.1, val_size=0.1, random_state=42):
@@ -202,8 +271,16 @@ def main():
     Model1 = LinearModelTrainTestVal(X_train,Y_train,X_val,Y_val)
 
     #For LinearModel with CrossValidation
-    X_train, Y_train, X_val, Y_val, kf = train_cv_test_split(X,Y)
-    Model2 = LinearModelCV(X_train, Y_train, kf)
+    #X_train, Y_train, X_val, Y_val, kf = train_cv_test_split(X,Y)
+    #Model2 = LinearModelCV(X_train, Y_train, kf)
+
+    #For PolynominalModel
+    X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
+    Model3 = PolynomialModel(X_train,Y_train,X_val,Y_val, [1,2,3,4,5,6,7,8,9,10])
+
+    #For KNNModel
+    X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
+    Model4 = KNNModel(X_train,Y_train,X_val,Y_val, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
 
     #Model.final_model_evaluation("baseline-submission-00")
     return
