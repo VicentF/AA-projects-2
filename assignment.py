@@ -8,6 +8,12 @@ from sklearn.model_selection import train_test_split, KFold
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.neighbors import KNeighborsRegressor
+from sklearn.metrics import make_scorer
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.experimental import enable_iterative_imputer  # noqa
+from sklearn.impute import IterativeImputer, KNNImputer, SimpleImputer
+from sklearn.model_selection import cross_val_score
+from sklearn.pipeline import make_pipeline
 
 # cMSE, the new metric for evaluation
 def error_metric(y, y_hat, c):
@@ -43,7 +49,6 @@ class Model:
     def normalize(self, X_train, X_val, std_scaler=None):
         if std_scaler is None:
             std_scaler = self.std_scaler
-        print(std_scaler)
         X_train = std_scaler.fit_transform(X_train)
         X_val = std_scaler.transform(X_val)
         return X_train, X_val
@@ -68,8 +73,11 @@ class Model:
         if file_name == "":
             file_name = self.__class__.__name__
         X_test = pd.read_csv('Datasets/test_data.csv')
-        #X_test = X_test.dropna()
-        Y_pred = self.predict(X_test)
+        if (X_test.isna().any().any()):
+            X_test_default = X_test.fillna(X_test.mean())
+            X_test_default = X_test_default.drop(columns=['ComorbidityIndex', 'GeneticRisk', 'TreatmentResponse'])
+            X_test_default.to_csv('FinalEvaluations/TEST.csv', index=False)
+        Y_pred = self.predict(X_test_default)
         Y_pred = pd.DataFrame(Y_pred, columns=['0'])
         Y_pred.insert(0, 'id', np.arange(0, len(Y_pred)))
         Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
@@ -86,6 +94,7 @@ class LinearModelTrainTestVal(Model):
 
     def __repr__(self):
         return
+
 
 class LinearModelCV(Model):
     def __init__(self, X_train, Y_train, kf):
@@ -114,7 +123,6 @@ class LinearModelCV(Model):
             Y_cv_train, Y_cv_val = self.Y_train[train_index], self.Y_train[val_index]
             self.model.fit(X_cv_train, Y_cv_train)
             predictions = self.model.predict(X_cv_val)
-            print(X_cv_val)
             score = error_metric(Y_cv_val, predictions, 0)
             self.cv_scores.append(score)
 
@@ -198,6 +206,7 @@ class KNNModel(Model):
                 self.best_k = k
         return
 
+
 # Creates a train,validation and test split
 def train_val_test_split(X, Y, test_size=0.1, val_size=0.1, random_state=42):
     # First split: Train + Validation vs Test
@@ -208,14 +217,16 @@ def train_val_test_split(X, Y, test_size=0.1, val_size=0.1, random_state=42):
     # Second split: Train vs Validation
     val_size_adjusted = val_size / (1 - test_size)  # Adjust validation size relative to remaining data
     X_train, X_val, Y_train, Y_val = train_test_split(
-        X_train_val, Y_train_val, test_size=val_size_adjusted, random_state=random_state
-    )
+        X_train_val, Y_train_val, test_size=val_size_adjusted, random_state=random_state)
+
+
 
     return X_train, Y_train, X_val, Y_val, X_test, Y_test
 
+
 # Creates a train, cross-validation and test split
-def train_cv_test_split(X, Y, test_size=0.1, n_splits=5, random_state=42):
-    # Split into Train + Test
+def train_cv_test_split(X, Y, test_size=0.2, n_splits=5, random_state=42):
+    #Split into Train + Test
     X_train, X_test, Y_train, Y_test = train_test_split(
         X, Y, test_size=test_size, random_state=random_state
     )
@@ -225,9 +236,15 @@ def train_cv_test_split(X, Y, test_size=0.1, n_splits=5, random_state=42):
 
     return X_train, Y_train, X_test, Y_test, kf
 
+
 # Creates our X and Y after dropping missing values & the censored data
 def dropMissingCensored(df):
-    df_cleaned = df.dropna().loc[df['Censored'] != 1]
+
+    df_cleaned = df.dropna(subset=['SurvivalTime'])
+    df_cleaned = df_cleaned[df_cleaned['Censored'] != 1]
+
+    columns_to_keep = df_cleaned.columns[(df_cleaned.columns == 'SurvivalTime') | (df_cleaned.isna().sum() == 0)]
+    df_cleaned = df_cleaned[columns_to_keep]
 
     #Pair-Plot of the new df and the target variable "SurvivalTime", comment out if not needed
     #sns.pairplot(df_cleaned,hue = 'SurvivalTime', diag_kind='kde')
@@ -236,10 +253,36 @@ def dropMissingCensored(df):
 
     Y = df_cleaned['SurvivalTime']
     X = df_cleaned.drop(columns=['SurvivalTime', 'Censored']).rename(columns = {'Unnamed: 0':'id'})
-    df = df.rename(columns={'old_column_name': 'new_column_name'})
-
 
     return X, Y
+
+
+def get_scores_for_imputer(imputer, X_missing, y_missing):
+    estimator = make_pipeline(imputer, regressor)
+    impute_scores = cross_val_score(
+        estimator, X_missing, y_missing, scoring="neg_mean_squared_error", cv=N_SPLITS
+    )
+    return impute_scores
+
+
+def imbuteValues(df):
+    Y_Miss = df['SurvivalTime']
+    X_Miss = df.drop(columns = ['SurvivalTime'])
+
+    X_Non_Miss, Y_Non_Miss = dropMissingCensored(df)
+
+    full_scores = cross_val_score(regressor, X_Miss, Y_Non_Miss, scoring=make_scorer(error_metric, X_Miss['Censored']), cv=N_SPLITS)
+
+    N_SPLITS = 4
+    regressor = RandomForestRegressor(random_state=0)
+    X_labes = []
+
+    cmses = np.zeros(5)
+    stds = np.zeros(5)
+
+
+
+    return X_Miss,Y_Miss
 
 # Creates the plots used for task 1.1
 def missingValuesAnalysis(df):
@@ -269,20 +312,24 @@ def main():
     #For LinearModel with train_val_test
     X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
     Model1 = LinearModelTrainTestVal(X_train,Y_train,X_val,Y_val)
+    #Model1.final_model_evaluation("baseline-submission-03")
 
     #For LinearModel with CrossValidation
-    #X_train, Y_train, X_val, Y_val, kf = train_cv_test_split(X,Y)
-    #Model2 = LinearModelCV(X_train, Y_train, kf)
+    X_train, Y_train, X_val, Y_val, kf = train_cv_test_split(X,Y)
+    Model2 = LinearModelCV(X_train, Y_train, kf)
+    #Model2.final_model_evaluation("baseline-submission-04")
 
     #For PolynominalModel
-    X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
-    Model3 = PolynomialModel(X_train,Y_train,X_val,Y_val, [1,2,3,4,5,6,7,8,9,10])
+    #X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
+    #Model3 = PolynomialModel(X_train,Y_train,X_val,Y_val, [1,2,3,4,5,6,7,8,9,10])
+    #Model3.final_model_evaluation("Nonlinear-submission-02")
+
 
     #For KNNModel
-    X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
-    Model4 = KNNModel(X_train,Y_train,X_val,Y_val, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
+    #X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
+    #Model4 = KNNModel(X_train,Y_train,X_val,Y_val, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
+    #Model4.final_model_evaluation("Nonlinear-submission-02")
 
-    #Model.final_model_evaluation("baseline-submission-00")
     return
 
 
