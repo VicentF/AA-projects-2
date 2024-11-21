@@ -256,7 +256,7 @@ def dropMissingCensored(df):
 
     return X, Y
 
-
+"""
 def get_scores_for_imputer(imputer, X_missing, y_missing):
     estimator = make_pipeline(imputer, regressor)
     impute_scores = cross_val_score(
@@ -283,6 +283,8 @@ def imbuteValues(df):
 
 
     return X_Miss,Y_Miss
+"""
+
 
 # Creates the plots used for task 1.1
 def missingValuesAnalysis(df):
