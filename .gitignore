@@ -1,4 +1,4 @@
 *Datasets
 plot_missing_values.py
 plot_missing_values.ipynb
-.idea
+*.idea
