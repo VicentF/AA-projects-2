@@ -99,6 +99,24 @@ def read_pruned_dataset():
         zs = ['X_uncensored', 'y', 'c']
     )
 
+def read_pruned_dataset_train_test_full():
+    """
+    returns 3 lists (train, val and test) each with 3 elements: their X, y and c, where X doesn't contain c.
+    c will probably always be 0
+    :return: list of lists of dataframes
+    """
+    ((X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test)) = read_data_frames(
+        'datasets/pruned',
+        data_types = ['train', 'val', 'test'],
+        zs = ['X_uncensored', 'y', 'c']
+    )
+    return (
+        pd.concat([X_train, X_val]),
+        pd.concat([y_train, y_val]),
+        pd.concat([c_train, c_val])
+    ), (X_test, y_test, c_test)
+
+
 def read_pruned_dataset_c_uc():
     """
         returns the pruned datasets as per request of:
@@ -111,7 +129,6 @@ def read_pruned_dataset_c_uc():
         zs = ['X_uncensored', 'y', 'X']
     )
     return X_uc_train, y_train, X_uc_val, y_val, X_uc_test, y_test, X_c_train, X_c_val, X_c_test
-
 
 def main():
     write_train()
