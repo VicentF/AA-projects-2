@@ -16,14 +16,14 @@ from sklearn.impute import IterativeImputer, KNNImputer, SimpleImputer
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import make_pipeline
 
-from DatasetManipulator import read_pruned_dataset
+from DatasetManipulator import read_pruned_dataset, read_x_test_averaged_nans
 
 
 # cMSE, the new metric for evaluation
 def error_metric(y, y_hat, c):
-    err = y_hat-y
-    err = (1-c)*err**2 + c*np.minimum(0,err)**2
-    return np.sum(err.to_numpy())/err.shape[0]
+    err = y_hat - y
+    err = (1-c)*err**2 + c*np.minimum(0, err)**2
+    return np.sum(err)/err.shape[0]
 
 def derivative_error_metric(y, y_hat, c, X):
     def derivative_min(e):
@@ -36,13 +36,15 @@ def derivative_error_metric(y, y_hat, c, X):
 
 # models
 class Model:
-    def __init__(self, X_train, Y_train, X_val, Y_val):
+    def __init__(self, X_train, y_train, X_val, y_val, c_train, c_val):
         self.start_time = time.time()
         self.std_scaler = StandardScaler()
-        self.X_train = X_train
-        self.Y_train = Y_train
-        self.X_val = X_val
-        self.Y_val = Y_val
+        self.X_train = X_train.to_numpy()
+        self.y_train = y_train.to_numpy()
+        self.X_val = X_val.to_numpy()
+        self.y_val = y_val.to_numpy()
+        self.c_train = c_train.to_numpy()
+        self.c_val = c_val.to_numpy()
         self.model = None
         return
 
@@ -69,27 +71,21 @@ class Model:
     def train(self):
         if self.model is None:
             raise Exception("Unassigned model. Shouldn't be none!")
-        self.model.fit(self.X_train, self.Y_train)
+        self.model.fit(self.X_train, self.y_train)
         return
 
     def logs(self):
         print(f"{self.__class__.__name__} training took {round(time.time() - self.start_time, 2)} seconds")
         print(self.__repr__())
-        print(f"cMSE (validation): {error_metric(self.Y_val, self.predict(self.X_val), np.zeros((self.Y_val.shape[0], 1)))}")
+        print(f"cMSE (validation): {error_metric(self.y_val, self.predict(self.X_val), self.c_val)}")
         return
 
     def predict(self, X):
         return self.model.predict(self.std_scaler.transform(X))
 
     def final_model_evaluation(self, file_name=""):
-        if file_name == "":
-            file_name = self.__class__.__name__
-        X_test = pd.read_csv('Datasets/test_data.csv')
-        if X_test.isna().any().any():
-            X_test_default = X_test.fillna(X_test.mean())
-            X_test_default = X_test_default.drop(columns=['ComorbidityIndex', 'GeneticRisk', 'TreatmentResponse'])
-            X_test_default.to_csv('FinalEvaluations/TEST.csv', index=False)
-        Y_pred = self.predict(X_test_default)
+        X_test = read_x_test_averaged_nans()
+        Y_pred = self.predict(X_test.to_numpy())
         Y_pred = pd.DataFrame(Y_pred, columns=['0'])
         Y_pred.insert(0, 'id', np.arange(0, len(Y_pred)))
         Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
@@ -97,20 +93,23 @@ class Model:
 
 
 class LinearModelTrainTestVal(Model):
-    def __init__(self, X_train, Y_train, X_val, Y_val):
-        super().__init__(X_train, Y_train, X_val, Y_val)
-        self.X_train = self.std_scaler.fit_transform(X_train)
+    def __init__(self, X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=False):
+        super().__init__(X_train, y_train, X_val, y_val, c_train, c_val)
+        self.X_train = self.std_scaler.fit_transform(self.X_train)
         self.model = LinearRegression()
-        self.train()
+        if grad_descent:
+            self.gradient_descent()
+        else:
+            self.train()
         self.logs()
         return
 
-    def gradient_descent(self, X, y, c, learning_rate=1):
+    def gradient_descent(self, learning_rate=1):
         self.start_time = time.time()
         MAX_ITERATIONS = 1000
-        X_1 = np.concatenate((self.std_scaler.transform(X), np.ones((X.shape[0], 1))), axis=1)    # adding intercept here
-        y = y.to_numpy().reshape(-1, 1)
-        c = c.to_numpy().reshape(-1, 1)
+        X_1 = np.concatenate([self.X_train, np.ones((self.X_train.shape[0], 1))], axis=1)
+        y = self.y_train.reshape(-1, 1)
+        c = self.c_train.reshape(-1, 1)
         weights = np.zeros((X_1.shape[1], 1))
         #weights = np.random.rand(X_1.shape[1], 1)
         for i in range(MAX_ITERATIONS):
@@ -120,7 +119,6 @@ class LinearModelTrainTestVal(Model):
 
         self.model.coef_ = weights[:-1].reshape(1, -1)
         self.model.intercept_ = weights[-1]
-        self.logs()
         return
 
     def __repr__(self):
@@ -128,10 +126,10 @@ class LinearModelTrainTestVal(Model):
 
 
 class LinearModelCV(Model):
-    def __init__(self, X_train, Y_train, kf):
-        super().__init__(X_train, Y_train, None, None)
-        self.kf = kf  # K-Fold cross-validator
-        self.X_train = self.normalize(X_train)  # Normalize the data
+    def __init__(self, X_train, y_train, c_train, c_val):
+        super().__init__(X_train, y_train, None, None, c_train, c_val)
+        #self.kf = kf  # K-Fold cross-validator
+        self.X_train = self.std_scaler.fit_transform(self.X_train)  # Normalize the data
         self.model = LinearRegression()  # Initialize the Linear Regression model
         self.cv_scores = []
         self.train()
@@ -141,17 +139,11 @@ class LinearModelCV(Model):
     def __repr__(self):
         return f"LinearModelCV: y=mx+b, m={round(self.model.coef_[1], 2)}, b={round(self.model.coef_[0], 2)}"
 
-    def normalize(self, X_train, std_scaler=None):
-        if std_scaler is None:
-            std_scaler = self.std_scaler
-        X_train = std_scaler.fit_transform(X_train)
-        return X_train
-
     def train(self):
-        self.Y_train = self.Y_train.reset_index(drop=True)
+        self.y_train = self.y_train.reset_index(drop=True)
         for train_index, val_index in self.kf.split(self.X_train):
             X_cv_train, X_cv_val = self.X_train[train_index], self.X_train[val_index]
-            Y_cv_train, Y_cv_val = self.Y_train[train_index], self.Y_train[val_index]
+            Y_cv_train, Y_cv_val = self.y_train[train_index], self.y_train[val_index]
             self.model.fit(X_cv_train, Y_cv_train)
             predictions = self.model.predict(X_cv_val)
             score = error_metric(Y_cv_val, predictions, 0)
@@ -169,8 +161,8 @@ class LinearModelCV(Model):
 
 
 class PolynomialModel(Model):
-    def __init__(self, X_train, Y_train, X_val, Y_val, degrees):
-        super().__init__(X_train, Y_train, X_val, Y_val)
+    def __init__(self, X_train, y_train, X_val, y_val, c_train, c_val, degrees):
+        super().__init__(X_train, y_train, X_val, y_val, c_train, c_val)
         self.degrees = degrees
         # Train the model
         self.poly = None
@@ -190,8 +182,8 @@ class PolynomialModel(Model):
             std_scaler = StandardScaler()
             X_train, X_val = self.normalize(X_train, X_val, std_scaler)
             model = LinearRegression()
-            model.fit(X_train, self.Y_train)
-            cMSE = error_metric(model.predict(X_val), self.Y_val, 0)
+            model.fit(X_train, self.y_train)
+            cMSE = error_metric(model.predict(X_val), self.y_val, 0)
             print(f"Degree {degree} ({model.n_features_in_} features) cMSE: {cMSE}\n")
             if cMSE < best_cMSE:
                 best_cMSE = cMSE
@@ -206,9 +198,9 @@ class PolynomialModel(Model):
 
 
 class KNNModel(Model):
-    def __init__(self, X_train, Y_train, X_val, Y_val, ks):
-        super().__init__(X_train, Y_train, X_val, Y_val)
-        self.X_train = self.std_scaler.fit_transform(X_train)  # stores validation without normalization
+    def __init__(self, X_train, y_train, X_val, y_val, c_train, c_val, ks):
+        super().__init__(X_train, y_train, X_val, y_val, c_train, c_val)
+        self.X_train = self.std_scaler.fit_transform(self.X_train)  # stores validation without normalization
         self.ks = ks
         self.knn = None
         self.best_k = -1
@@ -224,9 +216,9 @@ class KNNModel(Model):
         for k in self.ks:
             knn = KNeighborsRegressor(n_neighbors=k)
             model = knn
-            model.fit(self.X_train, self.Y_train)
+            model.fit(self.X_train, self.y_train)
             y_pred_val = model.predict(self.std_scaler.transform(self.X_val))   # automatically normalizes
-            cMSE = error_metric(y_pred_val, self.Y_val,0)
+            cMSE = error_metric(y_pred_val, self.y_val,0)
             print(f"KNN k={k} cMSE: {cMSE}\n")
             if cMSE < best_cMSE:
                 best_cMSE = cMSE
@@ -234,36 +226,6 @@ class KNNModel(Model):
                 self.knn = knn
                 self.best_k = k
         return
-
-
-# Creates a train,validation and test split
-def train_val_test_split(X, Y, test_size=0.1, val_size=0.1, random_state=42):
-    # First split: Train + Validation vs Test
-    X_train_val, X_test, Y_train_val, Y_test = train_test_split(
-        X, Y, test_size=test_size, random_state=random_state
-    )
-
-    # Second split: Train vs Validation
-    val_size_adjusted = val_size / (1 - test_size)  # Adjust validation size relative to remaining data
-    X_train, X_val, Y_train, Y_val = train_test_split(
-        X_train_val, Y_train_val, test_size=val_size_adjusted, random_state=random_state)
-
-
-
-    return X_train, Y_train, X_val, Y_val, X_test, Y_test
-
-
-# Creates a train, cross-validation and test split
-def train_cv_test_split(X, Y, test_size=0.2, n_splits=5, random_state=42):
-    #Split into Train + Test
-    X_train, X_test, Y_train, Y_test = train_test_split(
-        X, Y, test_size=test_size, random_state=random_state
-    )
-
-    # Create K-Fold cross-validator for the training set
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-
-    return X_train, Y_train, X_test, Y_test, kf
 
 """
 def get_scores_for_imputer(imputer, X_missing, y_missing):
@@ -318,18 +280,18 @@ def missingValuesAnalysis(df):
 def main():
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
 
-    model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val)
-    model.gradient_descent(X_train, y_train, c_train)
+    model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
+    model.final_model_evaluation("cMSE-baseline-submission-00")
 
     #For PolynominalModel
-    #X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
-    #Model3 = PolynomialModel(X_train,Y_train,X_val,Y_val, [1,2,3,4,5,6,7,8,9,10])
+    #X_train, y_train, X_val, y_val, X_test, y_test = train_val_test_split(X, Y)
+    #Model3 = PolynomialModel(X_train,y_train,X_val,y_val, [1,2,3,4,5,6,7,8,9,10])
     #Model3.final_model_evaluation("Nonlinear-submission-02")
 
 
     #For KNNModel
-    #X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
-    #Model4 = KNNModel(X_train,Y_train,X_val,Y_val, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
+    #X_train, y_train, X_val, y_val, X_test, y_test = train_val_test_split(X, Y)
+    #Model4 = KNNModel(X_train,y_train,X_val,y_val, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
     #Model4.final_model_evaluation("Nonlinear-submission-02")
 
     return

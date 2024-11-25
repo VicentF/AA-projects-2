@@ -131,7 +131,7 @@ def read_pruned_dataset_c_uc():
     return X_uc_train, y_train, X_uc_val, y_val, X_uc_test, y_test, X_c_train, X_c_val, X_c_test
 
 def read_x_test():
-    X_test = pd.read_csv('Datasets/test_X_test.csv')
+    X_test = pd.read_csv('Datasets/test_data.csv')
     X_test = X_test.drop(columns=['Unnamed: 0', 'id'], errors='ignore')
     return X_test
 
@@ -140,7 +140,7 @@ def read_x_test_averaged_nans():
     if X_test.isna().any().any():
         X_test_default = X_test.fillna(X_test.mean())
         X_test_default = X_test_default.drop(columns=['ComorbidityIndex', 'GeneticRisk', 'TreatmentResponse'])
-        X_test_default.to_csv('FinalEvaluations/TEST.csv', index=False)
+        X_test = X_test_default
     return X_test
 
 def main():
