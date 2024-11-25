@@ -21,16 +21,17 @@ from DatasetManipulator import read_pruned_dataset
 
 # cMSE, the new metric for evaluation
 def error_metric(y, y_hat, c):
-    err = y-y_hat
-    err = (1-c)*err**2 + c*np.maximum(0,err)**2
-    return np.sum(err)/err.shape[0]
+    err = y_hat-y
+    err = (1-c)*err**2 + c*np.minimum(0,err)**2
+    return np.sum(err.to_numpy())/err.shape[0]
 
 def derivative_error_metric(y, y_hat, c, X):
-    def derivative_max(e):
+    def derivative_min(e):
         # return 0 if e < 0 else 1
-        return (e >= 0).astype(int)
-    err = y-y_hat
-    return (X.T @ ((1-c) * err)) + (X.T @ (c * np.maximum(0, err) * derivative_max(err)))
+        return (e <= 0).astype(float)
+    err = y_hat - y
+    err2 = ((1-c) * err) + (c * np.minimum(0, err) * derivative_min(err))
+    return (X.T @ err2) / err.shape[0]
 
 
 # models
@@ -74,8 +75,7 @@ class Model:
     def logs(self):
         print(f"{self.__class__.__name__} training took {round(time.time() - self.start_time, 2)} seconds")
         print(self.__repr__())
-        print(f"cMSE (validation): {error_metric(self.Y_val, self.predict(self.X_val), 0)}")
-
+        print(f"cMSE (validation): {error_metric(self.Y_val, self.predict(self.X_val), np.zeros((self.Y_val.shape[0], 1)))}")
         return
 
     def predict(self, X):
@@ -85,7 +85,7 @@ class Model:
         if file_name == "":
             file_name = self.__class__.__name__
         X_test = pd.read_csv('Datasets/test_data.csv')
-        if (X_test.isna().any().any()):
+        if X_test.isna().any().any():
             X_test_default = X_test.fillna(X_test.mean())
             X_test_default = X_test_default.drop(columns=['ComorbidityIndex', 'GeneticRisk', 'TreatmentResponse'])
             X_test_default.to_csv('FinalEvaluations/TEST.csv', index=False)
@@ -106,24 +106,25 @@ class LinearModelTrainTestVal(Model):
         return
 
     def gradient_descent(self, X, y, c, learning_rate=1):
+        self.start_time = time.time()
         MAX_ITERATIONS = 1000
         X_1 = np.concatenate((self.std_scaler.transform(X), np.ones((X.shape[0], 1))), axis=1)    # adding intercept here
         y = y.to_numpy().reshape(-1, 1)
         c = c.to_numpy().reshape(-1, 1)
         weights = np.zeros((X_1.shape[1], 1))
+        #weights = np.random.rand(X_1.shape[1], 1)
         for i in range(MAX_ITERATIONS):
             y_hat = X_1 @ weights
             grad = derivative_error_metric(y, y_hat, c, X_1)
             weights -= learning_rate * grad
-            if (grad < 0.0001).all():
-                break
 
-        self.model.coef_ = weights[:-1]
+        self.model.coef_ = weights[:-1].reshape(1, -1)
         self.model.intercept_ = weights[-1]
+        self.logs()
         return
 
     def __repr__(self):
-        return f"LinearModel: y=w*X, w={np.round(self.model.coef_[0], 2)}"
+        return f"LinearModel: y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
 
 
 class LinearModelCV(Model):
@@ -263,26 +264,6 @@ def train_cv_test_split(X, Y, test_size=0.2, n_splits=5, random_state=42):
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
     return X_train, Y_train, X_test, Y_test, kf
-
-
-# Creates our X and Y after dropping missing values & the censored data
-def dropMissingCensored(df):
-
-    df_cleaned = df.dropna(subset=['SurvivalTime'])
-    df_cleaned = df_cleaned[df_cleaned['Censored'] != 1]
-
-    columns_to_keep = df_cleaned.columns[(df_cleaned.columns == 'SurvivalTime') | (df_cleaned.isna().sum() == 0)]
-    df_cleaned = df_cleaned[columns_to_keep]
-
-    #Pair-Plot of the new df and the target variable "SurvivalTime", comment out if not needed
-    #sns.pairplot(df_cleaned,hue = 'SurvivalTime', diag_kind='kde')
-    #plt.savefig("Plots/after_drop_pairplot_survival_time_V.png", dpi=300, bbox_inches='tight')
-    #plt.show()
-
-    Y = df_cleaned['SurvivalTime']
-    X = df_cleaned.drop(columns=['SurvivalTime', 'Censored']).rename(columns = {'Unnamed: 0':'id'})
-
-    return X, Y
 
 """
 def get_scores_for_imputer(imputer, X_missing, y_missing):
