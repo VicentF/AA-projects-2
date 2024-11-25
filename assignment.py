@@ -16,7 +16,7 @@ from sklearn.impute import IterativeImputer, KNNImputer, SimpleImputer
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import make_pipeline
 
-from DatasetManipulator import read_pruned_dataset, read_x_test_averaged_nans
+from DatasetManipulator import read_pruned_dataset, read_x_test_averaged_nans, create_kdata_fold
 
 
 # cMSE, the new metric for evaluation
@@ -128,7 +128,7 @@ class LinearModelTrainTestVal(Model):
 class LinearModelCV(Model):
     def __init__(self, X_train, y_train, c_train, c_val):
         super().__init__(X_train, y_train, None, None, c_train, c_val)
-        #self.kf = kf  # K-Fold cross-validator
+        self.kf = create_kdata_fold()  # K-Fold cross-validator
         self.X_train = self.std_scaler.fit_transform(self.X_train)  # Normalize the data
         self.model = LinearRegression()  # Initialize the Linear Regression model
         self.cv_scores = []
