@@ -4,6 +4,7 @@ import pandas as pd
 import missingno as msno
 import matplotlib.pyplot as plt
 import seaborn as sns
+from joblib import dump, load
 from sklearn.model_selection import train_test_split, KFold
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
@@ -15,11 +16,22 @@ from sklearn.impute import IterativeImputer, KNNImputer, SimpleImputer
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import make_pipeline
 
+from DatasetManipulator import read_pruned_dataset
+
+
 # cMSE, the new metric for evaluation
 def error_metric(y, y_hat, c):
     err = y-y_hat
     err = (1-c)*err**2 + c*np.maximum(0,err)**2
     return np.sum(err)/err.shape[0]
+
+def derivative_error_metric(y, y_hat, c, X):
+    def derivative_max(e):
+        # return 0 if e < 0 else 1
+        return (e >= 0).astype(int)
+    err = y-y_hat
+    return (X.T @ ((1-c) * err)) + (X.T @ (c * np.maximum(0, err) * derivative_max(err)))
+
 
 # models
 class Model:
@@ -83,6 +95,7 @@ class Model:
         Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
         return
 
+
 class LinearModelTrainTestVal(Model):
     def __init__(self, X_train, Y_train, X_val, Y_val):
         super().__init__(X_train, Y_train, X_val, Y_val)
@@ -92,8 +105,25 @@ class LinearModelTrainTestVal(Model):
         self.logs()
         return
 
-    def __repr__(self):
+    def gradient_descent(self, X, y, c, learning_rate=1):
+        MAX_ITERATIONS = 1000
+        X_1 = np.concatenate((self.std_scaler.transform(X), np.ones((X.shape[0], 1))), axis=1)    # adding intercept here
+        y = y.to_numpy().reshape(-1, 1)
+        c = c.to_numpy().reshape(-1, 1)
+        weights = np.zeros((X_1.shape[1], 1))
+        for i in range(MAX_ITERATIONS):
+            y_hat = X_1 @ weights
+            grad = derivative_error_metric(y, y_hat, c, X_1)
+            weights -= learning_rate * grad
+            if (grad < 0.0001).all():
+                break
+
+        self.model.coef_ = weights[:-1]
+        self.model.intercept_ = weights[-1]
         return
+
+    def __repr__(self):
+        return f"LinearModel: y=w*X, w={np.round(self.model.coef_[0], 2)}"
 
 
 class LinearModelCV(Model):
@@ -102,12 +132,13 @@ class LinearModelCV(Model):
         self.kf = kf  # K-Fold cross-validator
         self.X_train = self.normalize(X_train)  # Normalize the data
         self.model = LinearRegression()  # Initialize the Linear Regression model
+        self.cv_scores = []
         self.train()
         self.logs()
         return
 
     def __repr__(self):
-        return "LinearModelCV"
+        return f"LinearModelCV: y=mx+b, m={round(self.model.coef_[1], 2)}, b={round(self.model.coef_[0], 2)}"
 
     def normalize(self, X_train, std_scaler=None):
         if std_scaler is None:
@@ -116,7 +147,6 @@ class LinearModelCV(Model):
         return X_train
 
     def train(self):
-        self.cv_scores = []
         self.Y_train = self.Y_train.reset_index(drop=True)
         for train_index, val_index in self.kf.split(self.X_train):
             X_cv_train, X_cv_val = self.X_train[train_index], self.X_train[val_index]
@@ -125,6 +155,7 @@ class LinearModelCV(Model):
             predictions = self.model.predict(X_cv_val)
             score = error_metric(Y_cv_val, predictions, 0)
             self.cv_scores.append(score)
+        return
 
     def logs(self):
         print(f"{self.__class__.__name__} training took {round(time.time() - self.start_time, 2)} seconds")
@@ -134,9 +165,6 @@ class LinearModelCV(Model):
         for i, score in enumerate(self.cv_scores):
             print(f"Fold {i + 1} Score: {score}")
         print(f"Average Cross-Validation Score: {np.mean(self.cv_scores)}")
-
-    def final_model_evaluation(self, file_name=""):
-        super().final_model_evaluation(file_name)
 
 
 class PolynomialModel(Model):
@@ -307,19 +335,10 @@ def missingValuesAnalysis(df):
 
 
 def main():
+    (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
 
-    df = pd.read_csv('Datasets/train_data.csv')
-    X, Y = dropMissingCensored(df)
-
-    #For LinearModel with train_val_test
-    X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
-    Model1 = LinearModelTrainTestVal(X_train,Y_train,X_val,Y_val)
-    #Model1.final_model_evaluation("baseline-submission-03")
-
-    #For LinearModel with CrossValidation
-    X_train, Y_train, X_val, Y_val, kf = train_cv_test_split(X,Y)
-    Model2 = LinearModelCV(X_train, Y_train, kf)
-    #Model2.final_model_evaluation("baseline-submission-04")
+    model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val)
+    model.gradient_descent(X_train, y_train, c_train)
 
     #For PolynominalModel
     #X_train, Y_train, X_val, Y_val, X_test, Y_test = train_val_test_split(X, Y)
