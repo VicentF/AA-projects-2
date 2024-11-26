@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from joblib import dump, load
 from sklearn.model_selection import train_test_split, KFold
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, ElasticNet, Lasso
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.metrics import make_scorer
@@ -32,6 +32,9 @@ def derivative_error_metric(y, y_hat, c, X):
     err = y_hat - y
     err2 = ((1-c) * err) + (c * np.minimum(0, err) * derivative_min(err))
     return (X.T @ err2) / err.shape[0]
+
+def derivative_abs(w):
+    return (w > 0).astype(float) - (w < 0).astype(float)
 
 
 # models
@@ -83,7 +86,7 @@ class Model:
     def predict(self, X):
         return self.model.predict(self.std_scaler.transform(X))
 
-    def final_model_evaluation(self, file_name=""):
+    def final_model_evaluation(self, file_name):
         X_test = read_x_test_averaged_nans()
         Y_pred = self.predict(X_test.to_numpy())
         Y_pred = pd.DataFrame(Y_pred, columns=['0'])
@@ -104,17 +107,18 @@ class LinearModelTrainTestVal(Model):
         self.logs()
         return
 
-    def gradient_descent(self, learning_rate=1):
+    def gradient_descent(self, learning_rate=1, lasso_weight=0.1, Ridge_weight=0.1):
         self.start_time = time.time()
         MAX_ITERATIONS = 1000
         X_1 = np.concatenate([self.X_train, np.ones((self.X_train.shape[0], 1))], axis=1)
         y = self.y_train.reshape(-1, 1)
         c = self.c_train.reshape(-1, 1)
-        weights = np.zeros((X_1.shape[1], 1))
-        #weights = np.random.rand(X_1.shape[1], 1)
+        #weights = np.zeros((X_1.shape[1], 1))
+        weights = np.random.rand(X_1.shape[1], 1)
         for i in range(MAX_ITERATIONS):
             y_hat = X_1 @ weights
-            grad = derivative_error_metric(y, y_hat, c, X_1)
+            reg = lasso_weight * derivative_abs(weights) + Ridge_weight * weights
+            grad = derivative_error_metric(y, y_hat, c, X_1) + reg
             weights -= learning_rate * grad
 
         self.model.coef_ = weights[:-1].reshape(1, -1)
@@ -281,7 +285,7 @@ def main():
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
 
     model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
-    model.final_model_evaluation("cMSE-baseline-submission-00")
+    #model.final_model_evaluation("cMSE-baseline-submission-01")
 
     #For PolynominalModel
     #X_train, y_train, X_val, y_val, X_test, y_test = train_val_test_split(X, Y)
