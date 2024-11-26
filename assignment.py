@@ -38,19 +38,26 @@ def derivative_error_metric(y, y_hat, c, X):
 def derivative_abs(w):
     return (w > 0).astype(float) - (w < 0).astype(float)
 
+def product_dict(**kwargs):
+    # https://stackoverflow.com/questions/5228158/cartesian-product-of-a-dictionary-of-lists
+    keys = kwargs.keys()
+    for instance in itertools.product(*kwargs.values()):
+        yield dict(zip(keys, instance))
 
 # models
 class Model:
-    def __init__(self, X_train, y_train, X_val, y_val, c_train, c_val):
+    def __init__(self, X_train, y_train, X_val, y_val, c_train, c_val, train=False):
         self.start_time = time.time()
         self.std_scaler = StandardScaler()
-        self.X_train = X_train.to_numpy()
-        self.y_train = y_train.to_numpy()
-        self.X_val = X_val.to_numpy()
-        self.y_val = y_val.to_numpy()
-        self.c_train = c_train.to_numpy()
-        self.c_val = c_val.to_numpy()
+        self.X_train = X_train
+        self.y_train = y_train
+        self.X_val = X_val
+        self.y_val = y_val
+        self.c_train = c_train
+        self.c_val = c_val
         self.model = None
+        if train:
+            self.train()
         return
 
     @staticmethod
@@ -76,8 +83,7 @@ class Model:
     def normalize_train(self, X_train, std_scaler=None):
         if std_scaler is None:
             std_scaler = self.std_scaler
-        X_train = std_scaler.fit_transform(X_train)
-        return X_train
+        return std_scaler.fit_transform(X_train)
 
     def train(self):
         if self.model is None:
@@ -108,6 +114,43 @@ class Model:
         Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
         return
 
+    def find_best_hyperparameters(self):
+        """
+        Finds the best hyperparameters according to the lowest cMSE using cross validation
+        This function assumes the existence of the following in the model:
+            self.hyper_parameters_options - a dictionary in which the keys are the hyperparameter names and the values
+                                            are lists of the possible values
+            self.calculate_cmse_for_kf - a function that builds the model with the given data and calculates the cmse
+                use:
+                    self.calculate_cmse_for_kf(
+                        X_train, y_train, c_train, X_val, y_val, c_val,
+                        **hyperparameters
+                    )
+            self.chosen_hyper_parameters - a dictionary in which the keys are the hyperparameter names and the values
+                                            are the soon-to-be chosen values
+        :return: nothing
+        """
+        best_cMSE = float('inf')
+        kf = create_kdata_fold()
+        for hyperparameters in product_dict(**self.hyper_parameters_options):
+            cv_scores = []
+            for train_index, val_index in kf.split(self.X_train):
+                X_train, X_val = self.X_train[train_index], self.X_train[val_index]
+                y_train, y_val = self.y_train[train_index], self.y_train[val_index]
+                c_train, c_val = self.c_train[train_index], self.c_train[val_index]
+
+                cMSE = self.calculate_cmse_for_kf(
+                    X_train, y_train, c_train, X_val, y_val, c_val,
+                    **hyperparameters
+                )
+                cv_scores.append(cMSE)
+                # print(f"Degree {degree} ({model.n_features_in_} features) cMSE: {cMSE}\n")
+            average_CMSE = np.mean(cv_scores)
+            if average_CMSE < best_cMSE:
+                self.chosen_hyper_parameters = hyperparameters
+                best_cMSE = average_CMSE
+                __inside = ''.join([f'   {k}: {v} \n' for k, v in self.chosen_hyper_parameters.items()])
+                print(f"NEW BEST!: \n{__inside}   Average Cross-Validation Score: {average_CMSE}")
 
 class LinearModelTrainTestVal(Model):
     def __init__(self, X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=False):
@@ -145,7 +188,7 @@ class LinearModelTrainTestVal(Model):
 
 class LinearModelCV(Model):
     def __init__(self, X_train, y_train, c_train, c_val):
-        super().__init__(X_train, y_train, pd.DataFrame(), pd.DataFrame(), c_train, c_val)
+        super().__init__(X_train, y_train, None, None, c_train, None)
         self.kf = create_kdata_fold()  # K-Fold cross-validator
         self.X_train = self.std_scaler.fit_transform(self.X_train)  # Normalize the data
         self.model = LinearRegression()  # Initialize the Linear Regression model
@@ -179,110 +222,91 @@ class LinearModelCV(Model):
 
 
 class PolynomialModel(Model):
-    def __init__(self, X_train, y_train, c_train, degrees):
-        super().__init__(X_train, y_train, pd.DataFrame(), pd.DataFrame(), c_train, pd.DataFrame())
-        self.degrees = degrees
+    def __init__(self, X_train, y_train, c_train, degrees, train=True):
+        super().__init__(X_train, y_train, None, None, c_train, None)
         # Train the model
         self.poly = None
-        self.kf = create_kdata_fold()
-        self.degree = -1
-        self.l1_lambda = -1
-        self.train()
+        self.chosen_hyper_parameters = {
+            "degree" : -1,
+            "l1_lambda" : -1
+        }
+        self.hyper_parameters_options = {
+            "degree" : degrees,
+            "l1_lambda" : [10, 1, 0.1, 0] # bigger lambdas seem to have the same result beyond 10 (I tested up to 10^7)
+        }
+        if train:
+            self.train()
         # self.logs() use .logs_generic() outside
         return
 
     def __repr__(self):
-        return f"PolynomialModel: degree={self.degree} ({self.model.n_features_in_} features)"
-
-    def a(self, degree):
-        poly = PolynomialFeatures(degree=degree)
-        X_train, X_val = self.normalize(X_train, X_val, poly)
-        std_scaler = StandardScaler()
-        X_train, X_val = self.normalize(X_train, X_val, std_scaler)
-        model = LinearRegression()
-        model.fit(X_train, y_train)
-        return model
+        return f"PolynomialModel: degree={self.chosen_hyper_parameters['degree']} ({self.model.n_features_in_} features)"
 
     def get_model(self, l1_lambda):
-        return LinearRegression() if l1_lambda == 0 else Lasso(alpha=l1_lambda, tol=0.001, selection='random')
+        return LinearRegression() if l1_lambda == 0 else Lasso(
+            alpha=l1_lambda, tol=0.001, selection='random'
+        )
 
-    def find_best_hyper_parameters(self):
-        # Finding best degrees
-        best_cMSE = float('inf')
-        for degree, l1_lambda in itertools.product(self.degrees, [10, 1, 0.1, 0]):
-            cv_scores = []
-            for train_index, val_index in self.kf.split(self.X_train):
-                X_train, X_val = self.X_train[train_index], self.X_train[val_index]
-                y_train, y_val = self.y_train[train_index], self.y_train[val_index]
-                c_train, c_val = self.c_train[train_index], self.c_train[val_index]
-
-                poly = PolynomialFeatures(degree=degree)
-                X_train, X_val = self.normalize(X_train, X_val, poly)
-                std_scaler = StandardScaler()
-                X_train, X_val = self.normalize(X_train, X_val, std_scaler)
-                model = self.get_model(l1_lambda)
-                model.fit(X_train, y_train)
-
-                # TODO: should model.predict change to model.score?
-                # check https://scikit-learn.org/1.5/modules/cross_validation.html#obtaining-predictions-by-cross-validation
-                cMSE = error_metric(y_train, model.predict(X_train), c_train)
-                print(cMSE)
-                cMSE = error_metric(y_val, model.predict(X_val), c_val)
-                print(cMSE)
-                cv_scores.append(cMSE)
-                # print(f"Degree {degree} ({model.n_features_in_} features) cMSE: {cMSE}\n")
-            average_CMSE = np.mean(cv_scores)
-            if average_CMSE < best_cMSE:
-                print(f"NEW BEST!: \n   Degree: {degree} \n   L1 lambda: {l1_lambda} \n    Average Cross-Validation Score: {average_CMSE}")
-                best_cMSE = average_CMSE
-                self.degree = degree
-                self.l1_lambda = l1_lambda
+    def calculate_cmse_for_kf(self, X_train, y_train, c_train, X_val, y_val, c_val, degree, l1_lambda):
+        # TODO should poly be before or after scaler?
+        std_scaler = StandardScaler()
+        X_train, X_val = self.normalize(X_train, X_val, std_scaler)
+        poly = PolynomialFeatures(degree=degree)
+        X_train, X_val = self.normalize(X_train, X_val, poly)
+        model = self.get_model(l1_lambda)
+        model.fit(X_train, y_train)
+        # TODO: should model.predict change to model.score?
+        # check https://scikit-learn.org/1.5/modules/cross_validation.html#obtaining-predictions-by-cross-validation
+        cMSE = error_metric(y_val, model.predict(X_val), c_val)
+        return cMSE
 
     def train(self):
         #outside choosing
-        self.find_best_hyper_parameters()
-        if self.degree == -1 or self.l1_lambda == -1:
+        self.find_best_hyperparameters()
+        if any(v == -1 for v in self.chosen_hyper_parameters.values()):
             raise Exception("Some hyperparameters not set!")
-        self.poly = PolynomialFeatures(degree=self.degree)
-        X_train = self.normalize_train(self.X_train, self.poly)
         self.std_scaler = StandardScaler()
-        X_train = self.normalize_train(X_train, self.std_scaler)
-        self.model = self.get_model(self.l1_lambda)
+        X_train = self.normalize_train(self.X_train, self.std_scaler)
+        self.poly = PolynomialFeatures(degree=self.chosen_hyper_parameters["degree"])
+        X_train = self.normalize_train(X_train, self.poly)
+        self.model = self.get_model(self.chosen_hyper_parameters["l1_lambda"])
         self.model.fit(X_train, self.y_train)
 
     def predict(self, X):
-        return super().predict(self.poly.transform(X))
-
+        # return super().predict(self.poly.transform(X))
+        return self.model.predict(self.poly.transform(self.std_scaler.transform(X)))
 
 class KNNModel(Model):
-    def __init__(self, X_train, y_train, X_val, y_val, c_train, c_val, ks):
-        super().__init__(X_train, y_train, X_val, y_val, c_train, c_val)
-        self.X_train = self.std_scaler.fit_transform(self.X_train)  # stores validation without normalization
-        self.ks = ks
-        self.knn = None
-        self.best_k = -1
-        self.train()
-        self.logs()
+    def __init__(self, X_train, y_train, c_train, ks, train=True):
+        super().__init__(X_train, y_train, None, None, c_train, None)
+        self.chosen_hyper_parameters = {"k": -1}
+        self.hyper_parameters_options = {"k": ks}
+        if train:
+            self.train()
         return
 
     def __repr__(self):
-        return f"KNNModel: k={self.best_k}"
+        return f"KNNModel: k={self.chosen_hyper_parameters['k']}"
+
+    def get_model(self, k):
+        return KNeighborsRegressor(n_neighbors=k)
+
+    def calculate_cmse_for_kf(self, X_train, y_train, c_train, X_val, y_val, c_val, k):
+        model = KNeighborsRegressor(n_neighbors=k)
+        X_train, X_val = self.normalize(X_train, X_val)
+        model.fit(X_train, y_train)
+        y_pred_val = model.predict(self.std_scaler.transform(X_val))  # automatically normalizes
+        return error_metric(y_val, y_pred_val, c_val)
 
     def train(self):
-        best_cMSE = float('inf')
-        for k in self.ks:
-            knn = KNeighborsRegressor(n_neighbors=k)
-            model = knn
-            model.fit(self.X_train, self.y_train)
-            y_pred_val = model.predict(self.std_scaler.transform(self.X_val))   # automatically normalizes
-            cMSE = error_metric(self.y_val, y_pred_val,0)
-            print(f"KNN k={k} cMSE: {cMSE}\n")
-            if cMSE < best_cMSE:
-                best_cMSE = cMSE
-                self.model = model
-                self.knn = knn
-                self.best_k = k
-        return
+        #outside choosing
+        self.find_best_hyperparameters()
+        if any(v == -1 for v in self.chosen_hyper_parameters.values()):
+            raise Exception("Some hyperparameters not set!")
+        self.std_scaler = StandardScaler()
+        X_train = self.normalize_train(self.X_train, self.std_scaler)
+        self.model = self.get_model(self.chosen_hyper_parameters["k"])
+        self.model.fit(X_train, self.y_train)
 
 """
 def get_scores_for_imputer(imputer, X_missing, y_missing):
@@ -338,21 +362,23 @@ def eval_model(model, X_test, y_test, c_test):
     return error_metric(y_test, model.predict(X_test), c_test)
 
 def main():
-    (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
+    # (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
 
-    model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
+    #model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
+    #model.gradient_descent()
     #model.final_model_evaluation("cMSE-baseline-submission-01")
 
     #For PolynomialModel
-    (X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
-    Model3 = PolynomialModel(X_train,y_train, c_train, degrees=[1,2,3,4,5,6,7,8,9,10])
-    Model3.logs_generic(X_test, y_test, c_test, "test")
-    # Model3.final_model_evaluation("Nonlinear-submission-02")
+    #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
+    #Model3 = PolynomialModel(X_train,y_train, c_train, degrees=[1,2,3,4,5,6,7,8,9,10])
+    #Model3.logs_generic(X_test, y_test, c_test, "test")
+    #Model3.final_model_evaluation("Nonlinear-submission-02")
 
 
     #For KNNModel
-    #X_train, y_train, X_val, y_val, X_test, y_test = train_val_test_split(X, Y)
-    #Model4 = KNNModel(X_train,y_train,X_val,y_val, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
+    #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
+    #Model4 = KNNModel(X_train,y_train, c_train,  [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
+    #Model4.logs_generic(X_test, y_test, c_test, "test")
     #Model4.final_model_evaluation("Nonlinear-submission-02")
 
     return

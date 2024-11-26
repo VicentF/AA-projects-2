@@ -1,5 +1,6 @@
 from collections.abc import Iterable
 
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split, KFold
 import os
@@ -54,7 +55,7 @@ def write_data_frames(file_path, dfs, data_types=('train', 'val', 'test'), zs: I
 def read_data_frames(file_path, data_types=('train', 'val', 'test'), zs: Iterable ="Xy"):
     return [
         [
-            pd.read_csv(f"{file_path}/{Z}_{type_}.csv")
+            pd.read_csv(f"{file_path}/{Z}_{type_}.csv").to_numpy()
             for Z in zs
         ]
         for type_ in data_types
@@ -111,9 +112,9 @@ def read_pruned_dataset_train_test_full():
         zs = ['X_uncensored', 'y', 'c']
     )
     return (
-        pd.concat([X_train, X_val]),
-        pd.concat([y_train, y_val]),
-        pd.concat([c_train, c_val])
+        np.concat([X_train, X_val], axis=0),
+        np.concat([y_train, y_val], axis=0),
+        np.concat([c_train, c_val], axis=0)
     ), (X_test, y_test, c_test)
 
 
