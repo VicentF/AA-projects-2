@@ -143,6 +143,9 @@ def read_x_test_averaged_nans():
         X_test = X_test_default
     return X_test
 
+def create_kdata_fold():
+    return KFold(n_splits=N_SPLITS, shuffle=True, random_state=RANDOM_STATE)
+
 def main():
     write_train()
 

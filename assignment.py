@@ -1,3 +1,4 @@
+import itertools
 import time
 import numpy as np
 import pandas as pd
@@ -6,7 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from joblib import dump, load
 from sklearn.model_selection import train_test_split, KFold
-from sklearn.linear_model import LinearRegression, ElasticNet, Lasso
+from sklearn.linear_model import LinearRegression, Lasso
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.metrics import make_scorer
@@ -16,7 +17,8 @@ from sklearn.impute import IterativeImputer, KNNImputer, SimpleImputer
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import make_pipeline
 
-from DatasetManipulator import read_pruned_dataset, read_x_test_averaged_nans
+from DatasetManipulator import read_pruned_dataset, read_x_test_averaged_nans, create_kdata_fold, \
+    read_pruned_dataset_train_test_full
 
 
 # cMSE, the new metric for evaluation
@@ -71,6 +73,12 @@ class Model:
         X_val = std_scaler.transform(X_val)
         return X_train, X_val
 
+    def normalize_train(self, X_train, std_scaler=None):
+        if std_scaler is None:
+            std_scaler = self.std_scaler
+        X_train = std_scaler.fit_transform(X_train)
+        return X_train
+
     def train(self):
         if self.model is None:
             raise Exception("Unassigned model. Shouldn't be none!")
@@ -81,6 +89,12 @@ class Model:
         print(f"{self.__class__.__name__} training took {round(time.time() - self.start_time, 2)} seconds")
         print(self.__repr__())
         print(f"cMSE (validation): {error_metric(self.y_val, self.predict(self.X_val), self.c_val)}")
+        return
+
+    def logs_generic(self, X, y, c, data_type="validation"):
+        print(f"{self.__class__.__name__} training took {round(time.time() - self.start_time, 2)} seconds")
+        print(self.__repr__())
+        print(f"cMSE ({data_type}): {error_metric(y, self.predict(X), c)}")
         return
 
     def predict(self, X):
@@ -131,8 +145,8 @@ class LinearModelTrainTestVal(Model):
 
 class LinearModelCV(Model):
     def __init__(self, X_train, y_train, c_train, c_val):
-        super().__init__(X_train, y_train, None, None, c_train, c_val)
-        #self.kf = kf  # K-Fold cross-validator
+        super().__init__(X_train, y_train, pd.DataFrame(), pd.DataFrame(), c_train, c_val)
+        self.kf = create_kdata_fold()  # K-Fold cross-validator
         self.X_train = self.std_scaler.fit_transform(self.X_train)  # Normalize the data
         self.model = LinearRegression()  # Initialize the Linear Regression model
         self.cv_scores = []
@@ -165,37 +179,76 @@ class LinearModelCV(Model):
 
 
 class PolynomialModel(Model):
-    def __init__(self, X_train, y_train, X_val, y_val, c_train, c_val, degrees):
-        super().__init__(X_train, y_train, X_val, y_val, c_train, c_val)
+    def __init__(self, X_train, y_train, c_train, degrees):
+        super().__init__(X_train, y_train, pd.DataFrame(), pd.DataFrame(), c_train, pd.DataFrame())
         self.degrees = degrees
         # Train the model
         self.poly = None
-        self.best_degree = -1
+        self.kf = create_kdata_fold()
+        self.degree = -1
+        self.l1_lambda = -1
         self.train()
-        self.logs()
+        # self.logs() use .logs_generic() outside
         return
 
     def __repr__(self):
-        return f"PolynomialModel: degree={self.best_degree} ({self.model.n_features_in_} features)"
+        return f"PolynomialModel: degree={self.degree} ({self.model.n_features_in_} features)"
+
+    def a(self, degree):
+        poly = PolynomialFeatures(degree=degree)
+        X_train, X_val = self.normalize(X_train, X_val, poly)
+        std_scaler = StandardScaler()
+        X_train, X_val = self.normalize(X_train, X_val, std_scaler)
+        model = LinearRegression()
+        model.fit(X_train, y_train)
+        return model
+
+    def get_model(self, l1_lambda):
+        return LinearRegression() if l1_lambda == 0 else Lasso(alpha=l1_lambda, tol=0.001, selection='random')
+
+    def find_best_hyper_parameters(self):
+        # Finding best degrees
+        best_cMSE = float('inf')
+        for degree, l1_lambda in itertools.product(self.degrees, [10, 1, 0.1, 0]):
+            cv_scores = []
+            for train_index, val_index in self.kf.split(self.X_train):
+                X_train, X_val = self.X_train[train_index], self.X_train[val_index]
+                y_train, y_val = self.y_train[train_index], self.y_train[val_index]
+                c_train, c_val = self.c_train[train_index], self.c_train[val_index]
+
+                poly = PolynomialFeatures(degree=degree)
+                X_train, X_val = self.normalize(X_train, X_val, poly)
+                std_scaler = StandardScaler()
+                X_train, X_val = self.normalize(X_train, X_val, std_scaler)
+                model = self.get_model(l1_lambda)
+                model.fit(X_train, y_train)
+
+                # TODO: should model.predict change to model.score?
+                # check https://scikit-learn.org/1.5/modules/cross_validation.html#obtaining-predictions-by-cross-validation
+                cMSE = error_metric(y_train, model.predict(X_train), c_train)
+                print(cMSE)
+                cMSE = error_metric(y_val, model.predict(X_val), c_val)
+                print(cMSE)
+                cv_scores.append(cMSE)
+                # print(f"Degree {degree} ({model.n_features_in_} features) cMSE: {cMSE}\n")
+            average_CMSE = np.mean(cv_scores)
+            if average_CMSE < best_cMSE:
+                print(f"NEW BEST!: \n   Degree: {degree} \n   L1 lambda: {l1_lambda} \n    Average Cross-Validation Score: {average_CMSE}")
+                best_cMSE = average_CMSE
+                self.degree = degree
+                self.l1_lambda = l1_lambda
 
     def train(self):
-        best_cMSE = float('inf')
-        for degree in self.degrees:
-            poly = PolynomialFeatures(degree=degree)
-            X_train, X_val = self.normalize(self.X_train, self.X_val, poly)
-            std_scaler = StandardScaler()
-            X_train, X_val = self.normalize(X_train, X_val, std_scaler)
-            model = LinearRegression()
-            model.fit(X_train, self.y_train)
-            cMSE = error_metric(model.predict(X_val), self.y_val, 0)
-            print(f"Degree {degree} ({model.n_features_in_} features) cMSE: {cMSE}\n")
-            if cMSE < best_cMSE:
-                best_cMSE = cMSE
-                self.model = model
-                self.best_degree = degree
-                self.poly = poly
-                self.std_scaler = std_scaler
-        return
+        #outside choosing
+        self.find_best_hyper_parameters()
+        if self.degree == -1 or self.l1_lambda == -1:
+            raise Exception("Some hyperparameters not set!")
+        self.poly = PolynomialFeatures(degree=self.degree)
+        X_train = self.normalize_train(self.X_train, self.poly)
+        self.std_scaler = StandardScaler()
+        X_train = self.normalize_train(X_train, self.std_scaler)
+        self.model = self.get_model(self.l1_lambda)
+        self.model.fit(X_train, self.y_train)
 
     def predict(self, X):
         return super().predict(self.poly.transform(X))
@@ -222,7 +275,7 @@ class KNNModel(Model):
             model = knn
             model.fit(self.X_train, self.y_train)
             y_pred_val = model.predict(self.std_scaler.transform(self.X_val))   # automatically normalizes
-            cMSE = error_metric(y_pred_val, self.y_val,0)
+            cMSE = error_metric(self.y_val, y_pred_val,0)
             print(f"KNN k={k} cMSE: {cMSE}\n")
             if cMSE < best_cMSE:
                 best_cMSE = cMSE
@@ -280,6 +333,9 @@ def missingValuesAnalysis(df):
     plt.savefig("Plots/missing_data_dendogram.png", dpi=300, bbox_inches='tight')
     return
 
+# temporary function
+def eval_model(model, X_test, y_test, c_test):
+    return error_metric(y_test, model.predict(X_test), c_test)
 
 def main():
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
@@ -287,10 +343,11 @@ def main():
     model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
     #model.final_model_evaluation("cMSE-baseline-submission-01")
 
-    #For PolynominalModel
-    #X_train, y_train, X_val, y_val, X_test, y_test = train_val_test_split(X, Y)
-    #Model3 = PolynomialModel(X_train,y_train,X_val,y_val, [1,2,3,4,5,6,7,8,9,10])
-    #Model3.final_model_evaluation("Nonlinear-submission-02")
+    #For PolynomialModel
+    (X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
+    Model3 = PolynomialModel(X_train,y_train, c_train, degrees=[1,2,3,4,5,6,7,8,9,10])
+    Model3.logs_generic(X_test, y_test, c_test, "test")
+    # Model3.final_model_evaluation("Nonlinear-submission-02")
 
 
     #For KNNModel
