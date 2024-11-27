@@ -92,7 +92,7 @@ def read_pruned_dataset():
     """
     returns 3 lists (train, val and test) each with 3 elements: their X, y and c, where X doesn't contain c.
     c will probably always be 0
-    :return: list of lists of dataframes
+    :return: list of lists of np arrays
     """
     return read_data_frames(
         'datasets/pruned',
@@ -100,11 +100,42 @@ def read_pruned_dataset():
         zs = ['X_uncensored', 'y', 'c']
     )
 
-def read_pruned_dataset_train_test_full():
+def read_split_dataset():
     """
     returns 3 lists (train, val and test) each with 3 elements: their X, y and c, where X doesn't contain c.
     c will probably always be 0
-    :return: list of lists of dataframes
+    :return: list of lists of np arrays
+    """
+    return read_data_frames(
+        'datasets/split',
+        data_types = ['train', 'val', 'test'],
+        zs = ['X_uncensored', 'y', 'c']
+    )
+
+
+def read_split_dataset_train_test_full():
+    """
+    returns 2 lists (train, and test) each with 3 elements: their X, y and c, where X doesn't contain c.
+    train is the concatenation of train and val of
+    :return: list of lists of np arrays
+    """
+    ((X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test)) = read_data_frames(
+        'datasets/split',
+        data_types = ['train', 'val', 'test'],
+        zs = ['X_uncensored', 'y', 'c']
+    )
+    return (
+        np.concatenate([X_train, X_val], axis=0),
+        np.concatenate([y_train, y_val], axis=0),
+        np.concatenate([c_train, c_val], axis=0)
+    ), (X_test, y_test, c_test)
+
+def read_pruned_dataset_train_test_full():
+    """
+    returns 2 lists (train, and test) each with 3 elements: their X, y and c, where X doesn't contain c.
+    train  is the concatenation of train and val of
+    c will probably always be 0
+    :return: list of lists of np arrays
     """
     ((X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test)) = read_data_frames(
         'datasets/pruned',
@@ -112,9 +143,9 @@ def read_pruned_dataset_train_test_full():
         zs = ['X_uncensored', 'y', 'c']
     )
     return (
-        np.concat([X_train, X_val], axis=0),
-        np.concat([y_train, y_val], axis=0),
-        np.concat([c_train, c_val], axis=0)
+        np.concatenate([X_train, X_val], axis=0),
+        np.concatenate([y_train, y_val], axis=0),
+        np.concatenate([c_train, c_val], axis=0)
     ), (X_test, y_test, c_test)
 
 
@@ -122,7 +153,7 @@ def read_pruned_dataset_c_uc():
     """
         returns the pruned datasets as per request of:
         X_train, y_train, X_val, y_val, X_test, y_test, Censored_X_train, Censored_X_val, Censored_X_test
-        :return: list of lists of dataframes
+        :return: list of lists of np arrays
         """
     ((X_uc_train, y_train, X_c_train), (X_uc_val, y_val, X_c_val), (X_uc_test, y_test, X_c_test)) = read_data_frames(
         'datasets/pruned',

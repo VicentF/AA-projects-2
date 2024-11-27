@@ -11,16 +11,16 @@ from sklearn.linear_model import LinearRegression, Lasso
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.metrics import make_scorer
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, HistGradientBoostingRegressor
 from sklearn.experimental import enable_iterative_imputer  # noqa
 from sklearn.impute import IterativeImputer, KNNImputer, SimpleImputer
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import make_pipeline
+from catboost import CatBoostRegressor, Pool
 
-from DatasetManipulator import read_pruned_dataset, read_x_test_averaged_nans, create_kdata_fold, \
-    read_pruned_dataset_train_test_full
+from DatasetManipulator import *
 
-
+pd.set_option("display.max_columns", None)
 # cMSE, the new metric for evaluation
 def error_metric(y, y_hat, c):
     err = y_hat - y
@@ -292,7 +292,7 @@ class KNNModel(Model):
         return KNeighborsRegressor(n_neighbors=k)
 
     def calculate_cmse_for_kf(self, X_train, y_train, c_train, X_val, y_val, c_val, k):
-        model = KNeighborsRegressor(n_neighbors=k)
+        model = self.get_model(k)
         X_train, X_val = self.normalize(X_train, X_val)
         model.fit(X_train, y_train)
         y_pred_val = model.predict(self.std_scaler.transform(X_val))  # automatically normalizes
@@ -307,6 +307,94 @@ class KNNModel(Model):
         X_train = self.normalize_train(self.X_train, self.std_scaler)
         self.model = self.get_model(self.chosen_hyper_parameters["k"])
         self.model.fit(X_train, self.y_train)
+
+
+class HistGradientBoostingModel(Model):
+    def __init__(self, X_train, y_train, c_train):
+        super().__init__(X_train, y_train, None, None, c_train, None)
+        self.X_train = self.std_scaler.fit_transform(self.X_train)
+        self.model = HistGradientBoostingRegressor(l2_regularization=10e5)
+        self.train()
+        # self.logs()
+        return
+
+    def train(self):
+        X_train = self.normalize_train(self.X_train)
+        self.model.fit(X_train, self.y_train.ravel())
+
+    def __repr__(self):
+        return f"HistGradientBoostingModel: model={self.model}"
+        # return f"LinearModel: y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
+
+class CatBoostModel(Model):
+    def __init__(self, X_train, y_train, c_train, X_val, y_val, c_val):
+        super().__init__(X_train, y_train, X_val, y_val, c_train, c_val)
+        self.model = None
+        # self.logs()
+        self.chosen_hyper_parameters = {
+            "distname": "Extreme",
+            "scale": "2"
+        }
+        self.hyper_parameters_options = {
+            "distname": ["Normal", "Logistic", "Extreme"],
+            "l1_lambda": [1, 1.2, 2]
+        }
+
+        self.feature_names = [
+            "Age", "Gender", "Stage", "GeneticRisk",
+            "TreatmentType", "ComorbidityIndex", "TreatmentResponse"
+        ]
+        self.cat_features = [
+            "Gender", "Stage", "TreatmentType",
+        ]
+        self.train()
+
+    def get_model(self, distname, scale):
+        return CatBoostRegressor(
+            iterations=500,
+             loss_function=f'SurvivalAft:dist={distname};scale={scale}',
+             eval_metric='SurvivalAft',
+             verbose=0
+        )
+
+    def train(self):
+        x_train_frame = self.get_x_treated(self.X_train)
+        y_train_frame = self.get_y_treated(self.y_train, self.c_train)
+        x_val_frame = self.get_x_treated(self.X_val)
+        y_val_frame = self.get_y_treated(self.y_val, self.c_val)
+        self.model = self.get_model(**self.chosen_hyper_parameters)
+
+        # features = x_train_frame.columns.difference(['y_lower', 'y_upper'], sort=False)
+        train_pool = Pool(x_train_frame, label=y_train_frame, cat_features=self.cat_features)
+        val_pool = Pool(x_val_frame, label=y_val_frame, cat_features=self.cat_features)
+        self.model.fit(train_pool, eval_set=val_pool, verbose=0)
+
+    def get_x_treated(self, X):
+        # X_train = self.normalize_train(self.X_train)
+        x_frame = pd.DataFrame(X, columns=self.feature_names)
+        # x_train_frame.fillna(-1, inplace=True)
+        # print(x_train_frame)
+
+        # x_train_frame = x_train_frame.astype({k: int for k in feature_names}, errors='ignore')
+        x_frame = x_frame.astype({k: int for k in self.cat_features}, errors='ignore')
+        print(x_frame)
+        # print(x_train_frame)
+        # x_train_frame = x_train_frame.replace(-1, None)
+        return x_frame
+
+    def get_y_treated(self, y, c):
+        y_frame = pd.DataFrame(y)
+        y_frame2 = y_frame.copy()
+        y_frame2['y_upper'] = np.where(pd.DataFrame(c) == 0, y_frame, -1)
+        y_frame2['y_lower'] = y_frame
+        return y_frame2.loc[:, ['y_lower', 'y_upper']]
+
+    def __repr__(self):
+        return f"CatBoost: model={self.model}"
+        # return f"LinearModel: y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
+
+    def predict(self, X):
+        return self.model.predict(self.get_x_treated(X))
 
 """
 def get_scores_for_imputer(imputer, X_missing, y_missing):
@@ -370,16 +458,29 @@ def main():
 
     #For PolynomialModel
     #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
-    #Model3 = PolynomialModel(X_train,y_train, c_train, degrees=[1,2,3,4,5,6,7,8,9,10])
-    #Model3.logs_generic(X_test, y_test, c_test, "test")
-    #Model3.final_model_evaluation("Nonlinear-submission-02")
+    #Model2_1 = PolynomialModel(X_train,y_train, c_train, degrees=[1,2,3,4,5,6,7,8,9,10])
+    #Model2_1.logs_generic(X_test, y_test, c_test, "test")
+    #Model2_1.final_model_evaluation("Nonlinear-submission-02")
 
 
     #For KNNModel
     #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
-    #Model4 = KNNModel(X_train,y_train, c_train,  [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
-    #Model4.logs_generic(X_test, y_test, c_test, "test")
-    #Model4.final_model_evaluation("Nonlinear-submission-02")
+    #Model2_2 = KNNModel(X_train,y_train, c_train,  [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
+    #Model2_2.logs_generic(X_test, y_test, c_test, "test")
+    #Model2_2.final_model_evaluation("Nonlinear-submission-02")
+
+    (X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
+    Model3_2 = HistGradientBoostingModel(X_train,y_train, c_train)
+    Model3_2.logs_generic(X_test, y_test, c_test, "test")
+
+    #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
+    #Model3_2_2 = CatBoostModel(X_train,y_train, c_train)
+    (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_split_dataset()
+    Model3_2_2 = CatBoostModel(X_train,y_train, c_train, X_val, y_val, c_val)
+    Model3_2_2.logs_generic(X_test, y_test, c_test, "test")
+
+    #Model3_2.final_model_evaluation("Nonlinear-submission-02")
+
 
     return
 
