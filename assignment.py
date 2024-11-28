@@ -360,14 +360,6 @@ class CatBoostModel(Model):
     def predict(self, X):
         return self.model.predict(self.get_x_treated(X))
 
-
-def get_scores_for_imputer(imputer, X_missing, y_missing):
-    estimator = make_pipeline(imputer, regressor)
-    impute_scores = cross_val_score(
-        estimator, X_missing, y_missing, scoring="neg_mean_squared_error", cv=N_SPLITS
-    )
-    return impute_scores
-
 class ImputerModel(Model):
     def __init__(self, X_train, y_train, c_train, imputer):
         imputer.fit(X_train)
@@ -427,7 +419,7 @@ def imputation():
     # Impute missing values using the mean
     imputer = SimpleImputer(missing_values=np.nan, strategy="mean", copy=True)
     model = ImputerModel(X_train, y_train, c_train, imputer)
-    model.final_model_evaluation("handle-missing-submission-00")
+    #model.final_model_evaluation("handle-missing-submission-00")
 
     # TODO dont forget to mention that median and most frequent gave the same results
     # Impute missing values using the median
@@ -438,22 +430,22 @@ def imputation():
     # Impute missing values using the most frequent value
     imputer = SimpleImputer(missing_values=np.nan, strategy="most_frequent", copy=True)
     model = ImputerModel(X_train, y_train, c_train, imputer)
-    model.final_model_evaluation("handle-missing-submission-02")
+    #model.final_model_evaluation("handle-missing-submission-02")
 
     # Impute missing values using a constant zero
     imputer = SimpleImputer(missing_values=np.nan, strategy="constant", fill_value=0, copy=True)
     model = ImputerModel(X_train, y_train, c_train, imputer)
-    model.final_model_evaluation("handle-missing-submission-03")
+    #model.final_model_evaluation("handle-missing-submission-03")
 
     # Impute missing values using the KNN algorithm
     imputer = KNNImputer(n_neighbors=5, weights="uniform")
     model = ImputerModel(X_train, y_train, c_train, imputer)
-    model.final_model_evaluation("handle-missing-submission-04")
+    #model.final_model_evaluation("handle-missing-submission-04")
 
     # Impute missing values using round-robin linear regression
     imputer = IterativeImputer(max_iter=10, random_state=RANDOM_STATE)
     model = ImputerModel(X_train, y_train, c_train, imputer)
-    model.final_model_evaluation("handle-missing-submission-05")
+    #model.final_model_evaluation("handle-missing-submission-05")
 
     return
 
@@ -485,7 +477,6 @@ def eval_model(model, X_test, y_test, c_test):
 
 def main():
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
-    imputation()
 
     #model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
     #model.final_model_evaluation("cMSE-baseline-submission-02")
@@ -502,6 +493,8 @@ def main():
     #Model2_2 = KNNModel(X_train,y_train, c_train,  [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
     #Model2_2.logs_generic(X_test, y_test, c_test, "test")
     #Model2_2.final_model_evaluation("Nonlinear-submission-02")
+
+    imputation()
 
     (X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
     Model3_2 = HistGradientBoostingModel(X_train,y_train, c_train)
