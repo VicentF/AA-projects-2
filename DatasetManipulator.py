@@ -162,6 +162,13 @@ def read_pruned_dataset_c_uc():
     )
     return X_uc_train, y_train, X_uc_val, y_val, X_uc_test, y_test, X_c_train, X_c_val, X_c_test
 
+def read_whole_dataset():
+    return read_data_frames(
+        'datasets/split',
+        data_types=['train', 'val', 'test'],
+        zs=['X_uncensored', 'y', 'c']
+    )
+
 def read_x_test():
     X_test = pd.read_csv('Datasets/test_data.csv')
     X_test = X_test.drop(columns=['Unnamed: 0', 'id'], errors='ignore')

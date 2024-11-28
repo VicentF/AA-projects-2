@@ -158,7 +158,7 @@ class LinearModelTrainTestVal(Model):
         self.X_train = self.std_scaler.fit_transform(self.X_train)
         self.model = LinearRegression()
         if grad_descent:
-            self.gradient_descent()
+            self.gradient_descent(lasso_weight=0.35, Ridge_weight=0.1)
         else:
             self.train()
         self.logs()
@@ -184,42 +184,6 @@ class LinearModelTrainTestVal(Model):
 
     def __repr__(self):
         return f"LinearModel: y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
-
-
-class LinearModelCV(Model):
-    def __init__(self, X_train, y_train, c_train, c_val):
-        super().__init__(X_train, y_train, None, None, c_train, None)
-        self.kf = create_kdata_fold()  # K-Fold cross-validator
-        self.X_train = self.std_scaler.fit_transform(self.X_train)  # Normalize the data
-        self.model = LinearRegression()  # Initialize the Linear Regression model
-        self.cv_scores = []
-        self.train()
-        self.logs()
-        return
-
-    def __repr__(self):
-        return f"LinearModelCV: y=mx+b, m={round(self.model.coef_[1], 2)}, b={round(self.model.coef_[0], 2)}"
-
-    def train(self):
-        self.y_train = self.y_train.reset_index(drop=True)
-        for train_index, val_index in self.kf.split(self.X_train):
-            X_cv_train, X_cv_val = self.X_train[train_index], self.X_train[val_index]
-            Y_cv_train, Y_cv_val = self.y_train[train_index], self.y_train[val_index]
-            self.model.fit(X_cv_train, Y_cv_train)
-            predictions = self.model.predict(X_cv_val)
-            score = error_metric(Y_cv_val, predictions, 0)
-            self.cv_scores.append(score)
-        return
-
-    def logs(self):
-        print(f"{self.__class__.__name__} training took {round(time.time() - self.start_time, 2)} seconds")
-        print(self.__repr__())
-
-        print("Cross-Validation Results:")
-        for i, score in enumerate(self.cv_scores):
-            print(f"Fold {i + 1} Score: {score}")
-        print(f"Average Cross-Validation Score: {np.mean(self.cv_scores)}")
-
 
 class PolynomialModel(Model):
     def __init__(self, X_train, y_train, c_train, degrees, train=True):
@@ -396,7 +360,7 @@ class CatBoostModel(Model):
     def predict(self, X):
         return self.model.predict(self.get_x_treated(X))
 
-"""
+
 def get_scores_for_imputer(imputer, X_missing, y_missing):
     estimator = make_pipeline(imputer, regressor)
     impute_scores = cross_val_score(
@@ -404,26 +368,94 @@ def get_scores_for_imputer(imputer, X_missing, y_missing):
     )
     return impute_scores
 
+class ImputerModel(Model):
+    def __init__(self, X_train, y_train, c_train, imputer):
+        imputer.fit(X_train)
+        X_train_im = imputer.transform(X_train)
+        super().__init__(X_train_im, y_train, None, None, c_train, None)
+        self.X_train = self.std_scaler.fit_transform(self.X_train)
+        self.model = LinearRegression()
+        self.imputer = imputer
+        self.train()
+        self.cv_logs()
+        return
 
-def imbuteValues(df):
-    Y_Miss = df['SurvivalTime']
-    X_Miss = df.drop(columns = ['SurvivalTime'])
+    def kf_cv(self):
+        kf = create_kdata_fold()
+        cv_scores = []
+        for train_index, val_index in kf.split(self.X_train):
+            X_train, X_val = self.X_train[train_index], self.X_train[val_index]
+            y_train, y_val = self.y_train[train_index], self.y_train[val_index]
+            c_train, c_val = self.c_train[train_index], self.c_train[val_index]
 
-    X_Non_Miss, Y_Non_Miss = dropMissingCensored(df)
+        cv_scores.append(error_metric(y_val, self.predict(X_val), c_val))
+        return np.mean(cv_scores)
 
-    full_scores = cross_val_score(regressor, X_Miss, Y_Non_Miss, scoring=make_scorer(error_metric, X_Miss['Censored']), cv=N_SPLITS)
+    def cv_logs(self):
+        print(f"{self.__class__.__name__} training took {round(time.time() - self.start_time, 2)} seconds")
+        print(self.__repr__())
+        print(f"cMSE (kf cross validation): {self.kf_cv()}")
+        return
 
-    N_SPLITS = 4
-    regressor = RandomForestRegressor(random_state=0)
-    X_labes = []
+    def final_model_evaluation(self, file_name):
+        X_test = read_x_test().to_numpy()
+        X_test = self.imputer.transform(X_test)
+        Y_pred = self.predict(X_test)
+        Y_pred = pd.DataFrame(Y_pred, columns=['0'])
+        Y_pred.insert(0, 'id', np.arange(0, len(Y_pred)))
+        Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
+        return
 
-    cmses = np.zeros(5)
-    stds = np.zeros(5)
+    def __repr__(self):
+        if isinstance(self.imputer, KNNImputer):
+            return f"ImputerModel(KNNImputer, k={self.imputer.n_neighbors}): y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
+        elif isinstance(self.imputer, SimpleImputer):
+            return f"ImputerModel({self.imputer.strategy}): y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
+        elif isinstance(self.imputer, IterativeImputer):
+            return f"ImputerModel(IterativeImputer): y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
+        else:
+            pass
 
 
+# task 3.1
+def imputation():
+    (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_whole_dataset()
+    X_train = np.concatenate([X_train, X_val], axis=0)
+    y_train = np.concatenate([y_train, y_val], axis=0)
+    c_train = np.concatenate([c_train, c_val], axis=0)
 
-    return X_Miss,Y_Miss
-"""
+    # Impute missing values using the mean
+    imputer = SimpleImputer(missing_values=np.nan, strategy="mean", copy=True)
+    model = ImputerModel(X_train, y_train, c_train, imputer)
+    model.final_model_evaluation("handle-missing-submission-00")
+
+    # TODO dont forget to mention that median and most frequent gave the same results
+    # Impute missing values using the median
+    imputer = SimpleImputer(missing_values=np.nan, strategy="median", copy=True)
+    model = ImputerModel(X_train, y_train, c_train, imputer)
+    #model.final_model_evaluation("handle-missing-submission-01")
+
+    # Impute missing values using the most frequent value
+    imputer = SimpleImputer(missing_values=np.nan, strategy="most_frequent", copy=True)
+    model = ImputerModel(X_train, y_train, c_train, imputer)
+    model.final_model_evaluation("handle-missing-submission-02")
+
+    # Impute missing values using a constant zero
+    imputer = SimpleImputer(missing_values=np.nan, strategy="constant", fill_value=0, copy=True)
+    model = ImputerModel(X_train, y_train, c_train, imputer)
+    model.final_model_evaluation("handle-missing-submission-03")
+
+    # Impute missing values using the KNN algorithm
+    imputer = KNNImputer(n_neighbors=5, weights="uniform")
+    model = ImputerModel(X_train, y_train, c_train, imputer)
+    model.final_model_evaluation("handle-missing-submission-04")
+
+    # Impute missing values using round-robin linear regression
+    imputer = IterativeImputer(max_iter=10, random_state=RANDOM_STATE)
+    model = ImputerModel(X_train, y_train, c_train, imputer)
+    model.final_model_evaluation("handle-missing-submission-05")
+
+    return
 
 
 # Creates the plots used for task 1.1
@@ -445,16 +477,18 @@ def missingValuesAnalysis(df):
     plt.savefig("Plots/missing_data_dendogram.png", dpi=300, bbox_inches='tight')
     return
 
+
 # temporary function
 def eval_model(model, X_test, y_test, c_test):
     return error_metric(y_test, model.predict(X_test), c_test)
 
+
 def main():
-    # (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
+    (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
+    imputation()
 
     #model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
-    #model.gradient_descent()
-    #model.final_model_evaluation("cMSE-baseline-submission-01")
+    #model.final_model_evaluation("cMSE-baseline-submission-02")
 
     #For PolynomialModel
     #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
