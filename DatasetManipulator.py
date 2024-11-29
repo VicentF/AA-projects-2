@@ -77,7 +77,7 @@ def write_train():
     write_data_frames('datasets/split', [X_.drop(columns=["Censored"]) for X_ in Xs], zs=["X_uncensored"])
 
     # Pruned Dataset
-    df = df[df['Censored'] != 1] # removing all censored values
+    #df = df[df['Censored'] != 1] # removing all censored values
     df = df.dropna(axis=1) # removes all columns that have any NaN value
 
     y = df['SurvivalTime']

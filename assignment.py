@@ -21,18 +21,20 @@ from catboost import CatBoostRegressor, Pool
 from DatasetManipulator import *
 
 pd.set_option("display.max_columns", None)
+
+
 # cMSE, the new metric for evaluation
 def error_metric(y, y_hat, c):
-    err = y_hat - y
-    err = (1-c)*err**2 + c*np.minimum(0, err)**2
+    err = y - y_hat
+    err = (1-c)*err**2 + c*np.maximum(0, err)**2
     return np.sum(err)/err.shape[0]
 
 def derivative_error_metric(y, y_hat, c, X):
-    def derivative_min(e):
+    def derivative_max(e):
         # return 0 if e < 0 else 1
         return (e <= 0).astype(float)
-    err = y_hat - y
-    err2 = ((1-c) * err) + (c * np.minimum(0, err) * derivative_min(err))
+    err = y - y_hat
+    err2 = (-1 + c*derivative_max(err)) * err
     return (X.T @ err2) / err.shape[0]
 
 def derivative_abs(w):
@@ -478,7 +480,7 @@ def eval_model(model, X_test, y_test, c_test):
 def main():
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
 
-    #model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
+    model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
     #model.final_model_evaluation("cMSE-baseline-submission-02")
 
     #For PolynomialModel
@@ -494,17 +496,17 @@ def main():
     #Model2_2.logs_generic(X_test, y_test, c_test, "test")
     #Model2_2.final_model_evaluation("Nonlinear-submission-02")
 
-    imputation()
+    #imputation()
 
     (X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
-    Model3_2 = HistGradientBoostingModel(X_train,y_train, c_train)
-    Model3_2.logs_generic(X_test, y_test, c_test, "test")
+    #Model3_2 = HistGradientBoostingModel(X_train,y_train, c_train)
+    #Model3_2.logs_generic(X_test, y_test, c_test, "test")
 
     #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
     #Model3_2_2 = CatBoostModel(X_train,y_train, c_train)
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_split_dataset()
-    Model3_2_2 = CatBoostModel(X_train,y_train, c_train, X_val, y_val, c_val)
-    Model3_2_2.logs_generic(X_test, y_test, c_test, "test")
+    #Model3_2_2 = CatBoostModel(X_train,y_train, c_train, X_val, y_val, c_val)
+    #Model3_2_2.logs_generic(X_test, y_test, c_test, "test")
 
     #Model3_2.final_model_evaluation("Nonlinear-submission-02")
 
