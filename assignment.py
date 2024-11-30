@@ -105,6 +105,12 @@ class Model:
         print(f"cMSE ({data_type}): {error_metric(y, self.predict(X), c)}")
         return
 
+    def logs_cv(self):
+        print(f"{self.__class__.__name__} training took {round(time.time() - self.start_time, 2)} seconds")
+        print(self.__repr__())
+        print(f"cMSE (validation): {self.best_cMSE_cross_validation}")
+        return
+
     def predict(self, X):
         return self.model.predict(self.std_scaler.transform(X))
 
@@ -152,7 +158,8 @@ class Model:
                 self.chosen_hyper_parameters = hyperparameters
                 best_cMSE = average_CMSE
                 __inside = ''.join([f'   {k}: {v} \n' for k, v in self.chosen_hyper_parameters.items()])
-                print(f"NEW BEST!: \n{__inside}   Average Cross-Validation Score: {average_CMSE}")
+                # print(f"NEW BEST!: \n{__inside}   Average Cross-Validation Score: {average_CMSE}")
+        self.best_cMSE_cross_validation = best_cMSE
 
 class LinearModelTrainTestVal(Model):
     def __init__(self, X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=False):
@@ -202,6 +209,7 @@ class PolynomialModel(Model):
         }
         if train:
             self.train()
+            self.logs_cv()
         # self.logs() use .logs_generic() outside
         return
 
@@ -210,7 +218,7 @@ class PolynomialModel(Model):
 
     def get_model(self, l1_lambda):
         return LinearRegression() if l1_lambda == 0 else Lasso(
-            alpha=l1_lambda, tol=0.001, selection='random'
+            alpha=l1_lambda, tol=0.001, selection='random', warm_start=True, max_iter=1_000
         )
 
     def calculate_cmse_for_kf(self, X_train, y_train, c_train, X_val, y_val, c_val, degree, l1_lambda):
@@ -249,6 +257,7 @@ class KNNModel(Model):
         self.hyper_parameters_options = {"k": ks}
         if train:
             self.train()
+            self.logs_cv()
         return
 
     def __repr__(self):
@@ -279,14 +288,14 @@ class HistGradientBoostingModel(Model):
     def __init__(self, X_train, y_train, c_train):
         super().__init__(X_train, y_train, None, None, c_train, None)
         self.X_train = self.std_scaler.fit_transform(self.X_train)
-        self.model = HistGradientBoostingRegressor(l2_regularization=10e5)
+        self.model = HistGradientBoostingRegressor(l2_regularization=1)
         self.train()
         # self.logs()
         return
 
     def train(self):
-        X_train = self.normalize_train(self.X_train)
-        self.model.fit(X_train, self.y_train.ravel())
+        #X_train = self.normalize_train(self.X_train)
+        self.model.fit(self.X_train, self.y_train.ravel())
 
     def __repr__(self):
         return f"HistGradientBoostingModel: model={self.model}"
@@ -298,12 +307,19 @@ class CatBoostModel(Model):
         self.model = None
         # self.logs()
         self.chosen_hyper_parameters = {
-            "distname": "Extreme",
-            "scale": "2"
+            "distname": "Normal",
+            "scale": 1.2
         }
+        # self.best_cMSE_cross_validation = 351.9508586445804
         self.hyper_parameters_options = {
             "distname": ["Normal", "Logistic", "Extreme"],
-            "l1_lambda": [1, 1.2, 2]
+            "scale": [1, 1.2, 2]
+        }
+
+        # force best but still doing CV
+        self.hyper_parameters_options = {
+            "distname": ["Normal"],
+            "scale": [1.2]
         }
 
         self.feature_names = [
@@ -314,6 +330,7 @@ class CatBoostModel(Model):
             "Gender", "Stage", "TreatmentType",
         ]
         self.train()
+        self.logs_cv()
 
     def get_model(self, distname, scale):
         return CatBoostRegressor(
@@ -323,7 +340,26 @@ class CatBoostModel(Model):
              verbose=0
         )
 
+    def calculate_cmse_for_kf(
+        self, X_train, y_train, c_train, X_val, y_val, c_val,
+        distname, scale
+    ):
+        x_train_frame = self.get_x_treated(self.X_train)
+        y_train_frame = self.get_y_treated(self.y_train, self.c_train)
+        x_val_frame = self.get_x_treated(self.X_val)
+        y_val_frame = self.get_y_treated(self.y_val, self.c_val)
+        self.model = self.get_model(distname, scale)
+        train_pool = Pool(x_train_frame, label=y_train_frame, cat_features=self.cat_features)
+        val_pool = Pool(x_val_frame, label=y_val_frame, cat_features=self.cat_features)
+        self.model.fit(train_pool, eval_set=val_pool, verbose=0)
+        cmse = error_metric(y_val, self.predict(X_val), c_val)
+        print(f"{distname}:{scale} - {cmse}")
+        return cmse
+
     def train(self):
+        self.find_best_hyperparameters()
+        if any(v == -1 for v in self.chosen_hyper_parameters.values()):
+            raise Exception("Some hyperparameters not set!")
         x_train_frame = self.get_x_treated(self.X_train)
         y_train_frame = self.get_y_treated(self.y_train, self.c_train)
         x_val_frame = self.get_x_treated(self.X_val)
@@ -343,7 +379,7 @@ class CatBoostModel(Model):
 
         # x_train_frame = x_train_frame.astype({k: int for k in feature_names}, errors='ignore')
         x_frame = x_frame.astype({k: int for k in self.cat_features}, errors='ignore')
-        print(x_frame)
+        # print(x_frame)
         # print(x_train_frame)
         # x_train_frame = x_train_frame.replace(-1, None)
         return x_frame
@@ -356,7 +392,9 @@ class CatBoostModel(Model):
         return y_frame2.loc[:, ['y_lower', 'y_upper']]
 
     def __repr__(self):
-        return f"CatBoost: model={self.model}"
+        __inside = ''.join([f'   {k}: {v}' for k, v in self.chosen_hyper_parameters.items()])
+        # print(f"NEW BEST!: \n{__inside}   Average Cross-Validation Score: {average_CMSE}")
+        return f"CatBoost: model=CatBoostRegressor w/ {__inside}"
         # return f"LinearModel: y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
 
     def predict(self, X):
@@ -411,6 +449,54 @@ class ImputerModel(Model):
             pass
 
 
+# Creates the plots used for task 1.1
+def missingValuesAnalysis(df):
+    fig, ax = plt.subplots()
+    msno.matrix(df, color=(0.2, 0.4, 0.8), ax=ax)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('lightgray')
+    plt.savefig("Plots/missing_data_matrix.png", dpi=300, bbox_inches='tight')
+
+    plt.figure(figsize=(12, 6))  # Width=12, Height=6
+    msno.bar(df, color=(0.2, 0.4, 0.8), fontsize=12, sort='ascending')  # Blue bars, optional sorting
+    plt.savefig("Plots/missing_data_bar.png", dpi=300, bbox_inches='tight')
+
+    msno.heatmap(df)
+    plt.savefig("Plots/missing_data_heatmap.png", dpi=300, bbox_inches='tight')
+
+    msno.dendrogram(df, color=(0.2, 0.4, 0.8))
+    plt.savefig("Plots/missing_data_dendogram.png", dpi=300, bbox_inches='tight')
+    return
+
+# task 1.2
+def baseline():
+    (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
+    model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=False)
+    model.final_model_evaluation("baseline-submission-02")
+    return
+
+# task 1.3
+def grad_descent():
+    (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
+    model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
+    model.final_model_evaluation("cMSE-baseline-submission-02")
+    return
+
+# task 2
+def nonlinear():
+    #For KNNModel
+    (X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
+    model = KNNModel(X_train, y_train, c_train, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+    #model.logs_generic(X_test, y_test, c_test, "test")
+    model.final_model_evaluation("Nonlinear-submission-00")
+
+    #For PolynomialModel
+    (X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
+    model = PolynomialModel(X_train,y_train, c_train, degrees=[1,2,3,4,5,6,7,8,9,10])
+    #model.logs_generic(X_test, y_test, c_test, "test")
+    model.final_model_evaluation("Nonlinear-submission-01")
+    return
+
 # task 3.1
 def imputation():
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_whole_dataset()
@@ -451,65 +537,25 @@ def imputation():
 
     return
 
-
-# Creates the plots used for task 1.1
-def missingValuesAnalysis(df):
-    fig, ax = plt.subplots()
-    msno.matrix(df, color=(0.2, 0.4, 0.8), ax=ax)
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('lightgray')
-    plt.savefig("Plots/missing_data_matrix.png", dpi=300, bbox_inches='tight')
-
-    plt.figure(figsize=(12, 6))  # Width=12, Height=6
-    msno.bar(df, color=(0.2, 0.4, 0.8), fontsize=12, sort='ascending')  # Blue bars, optional sorting
-    plt.savefig("Plots/missing_data_bar.png", dpi=300, bbox_inches='tight')
-
-    msno.heatmap(df)
-    plt.savefig("Plots/missing_data_heatmap.png", dpi=300, bbox_inches='tight')
-
-    msno.dendrogram(df, color=(0.2, 0.4, 0.8))
-    plt.savefig("Plots/missing_data_dendogram.png", dpi=300, bbox_inches='tight')
-    return
-
-
-# temporary function
-def eval_model(model, X_test, y_test, c_test):
-    return error_metric(y_test, model.predict(X_test), c_test)
-
-
-def main():
-    (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
-
-    model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
-    #model.final_model_evaluation("cMSE-baseline-submission-02")
-
-    #For PolynomialModel
-    #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
-    #Model2_1 = PolynomialModel(X_train,y_train, c_train, degrees=[1,2,3,4,5,6,7,8,9,10])
-    #Model2_1.logs_generic(X_test, y_test, c_test, "test")
-    #Model2_1.final_model_evaluation("Nonlinear-submission-02")
-
-
-    #For KNNModel
-    #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
-    #Model2_2 = KNNModel(X_train,y_train, c_train,  [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
-    #Model2_2.logs_generic(X_test, y_test, c_test, "test")
-    #Model2_2.final_model_evaluation("Nonlinear-submission-02")
-
-    #imputation()
-
+# task 3.2
+def boosting():
     (X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
-    #Model3_2 = HistGradientBoostingModel(X_train,y_train, c_train)
+    Model3_2 = HistGradientBoostingModel(X_train, y_train, c_train)
     #Model3_2.logs_generic(X_test, y_test, c_test, "test")
 
     #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
     #Model3_2_2 = CatBoostModel(X_train,y_train, c_train)
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_split_dataset()
-    #Model3_2_2 = CatBoostModel(X_train,y_train, c_train, X_val, y_val, c_val)
-    #Model3_2_2.logs_generic(X_test, y_test, c_test, "test")
+    Model3_2_2 = CatBoostModel(X_train,y_train, c_train, X_val, y_val, c_val)
+    # Model3_2_2.logs_generic(X_test, y_test, c_test, "test")
+    return
 
-    #Model3_2.final_model_evaluation("Nonlinear-submission-02")
 
+def main():
+    (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
+
+    boosting()
+    #nonlinear()
 
     return
 
