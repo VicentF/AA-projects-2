@@ -4,7 +4,7 @@ from collections.abc import Iterable
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from param import DataFrame
+from pandas import DataFrame
 from sklearn.model_selection import train_test_split, KFold
 import os
 
@@ -83,10 +83,19 @@ def read_data_frames(file_path, data_types=('train', 'val', 'test'), zs: Iterabl
 
 def write_train():
     df = pd.read_csv('Datasets/train_data.csv')
-    df = df.dropna(subset=['SurvivalTime']) # should this be done here? ans: yes, according to Task 3's initial text
     df = df.drop(columns =['Unnamed: 0', 'id'], errors='ignore')
 
     # Unaltered Dataset
+    y = df['SurvivalTime']
+    X = df.drop(columns=['SurvivalTime'])
+    ret = (X_train, y_train, X_val, y_val, X_test, y_test) = train_val_test_split(X, y)
+    Xs = [X_train, X_val, X_test]
+    write_data_frames('datasets/unaltered', ret)
+    write_data_frames('datasets/unaltered', [X_["Censored"] for X_ in Xs], zs="c")
+    write_data_frames('datasets/unaltered', [X_.drop(columns=["Censored"]) for X_ in Xs], zs=["X_uncensored"])
+
+    # Unaltered Dataset
+    df = df.dropna(subset=['SurvivalTime'])
     y = df['SurvivalTime']
     X = df.drop(columns=['SurvivalTime'])
     ret = (X_train, y_train, X_val, y_val, X_test, y_test) = train_val_test_split(X, y)
@@ -119,6 +128,20 @@ def read_pruned_dataset():
         zs = ['X_uncensored', 'y', 'c']
     )
 
+def read_unaltered_dataset():
+    """
+    returns 3 lists (train, val and test) each with 3 elements: their X, y and c, where X doesn't contain c.
+    c will probably always be 0
+    :return: list of lists of np arrays
+    """
+    return read_numpyarrays(
+        'datasets/unaltered',
+        data_types = ['train', 'val', 'test'],
+        zs = ['X_uncensored', 'y', 'c']
+    )
+
+
+
 def read_split_dataset():
     """
     returns 3 lists (train, val and test) each with 3 elements: their X, y and c, where X doesn't contain c.
@@ -130,6 +153,23 @@ def read_split_dataset():
         data_types = ['train', 'val', 'test'],
         zs = ['X_uncensored', 'y', 'c']
     )
+
+def read_unaltered_dataset_train_test_full():
+    """
+    returns 2 lists (train, and test) each with 3 elements: their X, y and c, where X doesn't contain c.
+    train is the concatenation of train and val of
+    :return: list of lists of np arrays
+    """
+    ((X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test)) = read_numpyarrays(
+        'datasets/unaltered',
+        data_types = ['train', 'val', 'test'],
+        zs = ['X_uncensored', 'y', 'c']
+    )
+    return (
+        np.concatenate([X_train, X_val], axis=0),
+        np.concatenate([y_train, y_val], axis=0),
+        np.concatenate([c_train, c_val], axis=0)
+    ), (X_test, y_test, c_test)
 
 
 def read_split_dataset_train_test_full():
@@ -256,8 +296,8 @@ def convert_x_into_float(X: DataFrame, X_tot: DataFrame):
 
 
 def main():
-    # write_train()
-    visualize_split_data()
+    write_train()
+    # visualize_split_data()
 
 
 if __name__ == '__main__':
