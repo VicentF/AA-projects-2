@@ -289,17 +289,43 @@ class HistGradientBoostingModel(Model):
         super().__init__(X_train, y_train, None, None, c_train, None)
         self.X_train = self.std_scaler.fit_transform(self.X_train)
         self.model = HistGradientBoostingRegressor(l2_regularization=1)
+        self.chosen_hyper_parameters = {
+            "l2_lambda": [-1]
+        }
+        # self.best_cMSE_cross_validation = 351.9508586445804
+        self.hyper_parameters_options = {
+            "l2_lambda": [0, 0.001, 0.01, 0.1, 1, 10]
+        }
         self.train()
-        # self.logs()
+        self.logs_cv()
         return
 
+    def get_model(self, l2_lambda):
+        return HistGradientBoostingRegressor(l2_regularization=l2_lambda)
+
     def train(self):
-        #X_train = self.normalize_train(self.X_train)
+        self.find_best_hyperparameters()
+        self.model = self.get_model(**self.chosen_hyper_parameters)
         self.model.fit(self.X_train, self.y_train.ravel())
 
     def __repr__(self):
         return f"HistGradientBoostingModel: model={self.model}"
         # return f"LinearModel: y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
+
+    def calculate_cmse_for_kf(self, X_train, y_train, c_train, X_val, y_val, c_val, l2_lambda):
+        model = self.get_model(l2_lambda)
+        model.fit(X_train, y_train.ravel())
+        cmse = error_metric(y_val, model.predict(X_val), c_val)
+        return cmse
+
+
+    def final_model_evaluation(self, file_name):
+        X_test = read_x_test()
+        Y_pred = self.predict(X_test.to_numpy())
+        Y_pred = pd.DataFrame(Y_pred, columns=['0'])
+        Y_pred.insert(0, 'id', np.arange(0, len(Y_pred)))
+        Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
+        return
 
 class CatBoostModel(Model):
     def __init__(self, X_train, y_train, c_train, X_val, y_val, c_val):
@@ -314,12 +340,6 @@ class CatBoostModel(Model):
         self.hyper_parameters_options = {
             "distname": ["Normal", "Logistic", "Extreme"],
             "scale": [1, 1.2, 2]
-        }
-
-        # force best but still doing CV
-        self.hyper_parameters_options = {
-            "distname": ["Normal"],
-            "scale": [1.2]
         }
 
         self.feature_names = [
@@ -399,6 +419,14 @@ class CatBoostModel(Model):
 
     def predict(self, X):
         return self.model.predict(self.get_x_treated(X))
+
+    def final_model_evaluation(self, file_name):
+        X_test = read_x_test()
+        Y_pred = self.predict(X_test.to_numpy())
+        Y_pred = pd.DataFrame(Y_pred, columns=['0'])
+        Y_pred.insert(0, 'id', np.arange(0, len(Y_pred)))
+        Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
+        return
 
 class ImputerModel(Model):
     def __init__(self, X_train, y_train, c_train, imputer):
@@ -542,12 +570,14 @@ def boosting():
     (X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
     Model3_2 = HistGradientBoostingModel(X_train, y_train, c_train)
     #Model3_2.logs_generic(X_test, y_test, c_test, "test")
+    Model3_2.final_model_evaluation("handle-missing-submission-10")
 
     #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
     #Model3_2_2 = CatBoostModel(X_train,y_train, c_train)
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_split_dataset()
     Model3_2_2 = CatBoostModel(X_train,y_train, c_train, X_val, y_val, c_val)
     # Model3_2_2.logs_generic(X_test, y_test, c_test, "test")
+    Model3_2_2.final_model_evaluation("handle-missing-submission-11")
     return
 
 
