@@ -4,8 +4,10 @@ import numpy as np
 import pandas as pd
 import missingno as msno
 import matplotlib.pyplot as plt
+import scipy
 import seaborn as sns
 from joblib import dump, load
+from sklearn.manifold import Isomap
 from sklearn.model_selection import train_test_split, KFold
 from sklearn.linear_model import LinearRegression, Lasso
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
@@ -429,13 +431,17 @@ class CatBoostModel(Model):
         return
 
 class ImputerModel(Model):
-    def __init__(self, X_train, y_train, c_train, imputer):
-        imputer.fit(X_train)
-        X_train_im = imputer.transform(X_train)
+    def __init__(self, X_train, y_train, c_train, imputer_x, inputer_y=None):
+        imputer_x.fit(X_train)
+        X_train_im = imputer_x.transform(X_train)
+        if inputer_y is not None:
+            inputer_y.fit(y_train)
+            y_train = inputer_y.transform(y_train)
         super().__init__(X_train_im, y_train, None, None, c_train, None)
         self.X_train = self.std_scaler.fit_transform(self.X_train)
         self.model = LinearRegression()
-        self.imputer = imputer
+        self.imputer_x = imputer_x
+        self.imputer_y = inputer_y
         self.train()
         self.cv_logs()
         return
@@ -448,7 +454,7 @@ class ImputerModel(Model):
             y_train, y_val = self.y_train[train_index], self.y_train[val_index]
             c_train, c_val = self.c_train[train_index], self.c_train[val_index]
 
-        cv_scores.append(error_metric(y_val, self.predict(X_val), c_val))
+            cv_scores.append(error_metric(y_val, self.predict(X_val), c_val))
         return np.mean(cv_scores)
 
     def cv_logs(self):
@@ -459,7 +465,7 @@ class ImputerModel(Model):
 
     def final_model_evaluation(self, file_name):
         X_test = read_x_test().to_numpy()
-        X_test = self.imputer.transform(X_test)
+        X_test = self.imputer_x.transform(X_test)
         Y_pred = self.predict(X_test)
         Y_pred = pd.DataFrame(Y_pred, columns=['0'])
         Y_pred.insert(0, 'id', np.arange(0, len(Y_pred)))
@@ -467,14 +473,70 @@ class ImputerModel(Model):
         return
 
     def __repr__(self):
-        if isinstance(self.imputer, KNNImputer):
-            return f"ImputerModel(KNNImputer, k={self.imputer.n_neighbors}): y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
-        elif isinstance(self.imputer, SimpleImputer):
-            return f"ImputerModel({self.imputer.strategy}): y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
-        elif isinstance(self.imputer, IterativeImputer):
+        if isinstance(self.imputer_x, KNNImputer):
+            return f"ImputerModel(KNNImputer, k={self.imputer_x.n_neighbors}): y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
+        elif isinstance(self.imputer_x, SimpleImputer):
+            return f"ImputerModel({self.imputer_x.strategy}): y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
+        elif isinstance(self.imputer_x, IterativeImputer):
             return f"ImputerModel(IterativeImputer): y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
         else:
             pass
+
+class IsomapModel(Model):
+    def __init__(self, X_train, y_train, c_train, imputer_x, inputer_y=None, train=True):
+        imputer_x.fit(X_train)
+        X_train_im = imputer_x.transform(X_train)
+        if inputer_y is not None:
+            inputer_y.fit(y_train)
+            y_train = inputer_y.transform(y_train)
+        super().__init__(X_train_im, y_train, None, None, c_train, None)
+        self.isomap = None
+        self.imputer_x = imputer_x
+        self.inputer_y = inputer_y
+        self.chosen_hyper_parameters = {
+            "n_neighbors": -1,
+            "n_components": -1
+        }
+        self.hyper_parameters_options = {
+            "n_neighbors": [90],#[i for i in range(1, 10)],
+            "n_components": [i for i in range(1, X_train.shape[1])]
+        }
+        if train:
+            self.train()
+            self.logs_cv()
+        return
+
+    def __repr__(self):
+        return f"IsomapModel: n_neighbors={self.chosen_hyper_parameters['n_neighbors']} n_components={self.chosen_hyper_parameters['n_components']}"
+
+    def predict(self, X):
+        return self.model.predict(self.std_scaler.transform(self.isomap.transform(X)))
+
+    def calculate_cmse_for_kf(self, X_train, y_train, c_train, X_val, y_val, c_val, n_neighbors, n_components):
+        isomap = Isomap(n_neighbors=n_neighbors, n_components=n_components)
+        X_train = scipy.sparse.lil_matrix(X_train, X_train.shape)
+        X_val = scipy.sparse.lil_matrix(X_val, X_val.shape)
+        X_train = isomap.fit_transform(X_train)
+        X_val = isomap.transform(X_val)
+        X_train, X_val = self.normalize(X_train, X_val)
+        model = LinearRegression()
+        model.fit(X_train, y_train)
+        cMSE = error_metric(y_val, model.predict(X_val), c_val)
+        return cMSE
+
+    def train(self):
+        if any(v == -1 for v in self.chosen_hyper_parameters.values()):
+            self.find_best_hyperparameters()
+            #raise Exception("Some hyperparameters not set!")
+        if any(v == -1 for v in self.chosen_hyper_parameters.values()):
+            raise Exception("Some hyperparameters not set!")
+
+        self.isomap = Isomap(n_neighbors=self.chosen_hyper_parameters["n_neighbors"], n_components=self.chosen_hyper_parameters["n_components"])
+        X_train = self.isomap.fit_transform(self.X_train)
+        X_train = self.normalize_train(X_train)
+        self.model = LinearRegression()
+        self.model.fit(X_train, self.y_train)
+        return
 
 
 # Creates the plots used for task 1.1
@@ -554,7 +616,7 @@ def imputation():
     #model.final_model_evaluation("handle-missing-submission-03")
 
     # Impute missing values using the KNN algorithm
-    imputer = KNNImputer(n_neighbors=5, weights="uniform")
+    imputer = KNNImputer(n_neighbors=5, weights="uniform", copy=True)
     model = ImputerModel(X_train, y_train, c_train, imputer)
     #model.final_model_evaluation("handle-missing-submission-04")
 
@@ -580,12 +642,56 @@ def boosting():
     Model3_2_2.final_model_evaluation("handle-missing-submission-11")
     return
 
+# task 4.1
+def imputing_unlabeled_y():
+    (X_train, y_train, c_train), (X_test, y_test, c_test) = read_unaltered_dataset_train_test_full()
+
+    # Impute missing values using the mean
+    imputer_x = SimpleImputer(missing_values=np.nan, strategy="mean", copy=True)
+    imputer_y = SimpleImputer(missing_values=np.nan, strategy="mean", copy=True)
+    model_im_mean = ImputerModel(X_train, y_train, c_train, imputer_x, imputer_y)
+
+    # Impute missing values using the median
+    imputer_x = SimpleImputer(missing_values=np.nan, strategy="median", copy=True)
+    imputer_y = SimpleImputer(missing_values=np.nan, strategy="median", copy=True)
+    model_im_median = ImputerModel(X_train, y_train, c_train, imputer_x, imputer_y)
+
+    # Impute missing values using the most frequent value
+    imputer_x = SimpleImputer(missing_values=np.nan, strategy="most_frequent", copy=True)
+    imputer_y = SimpleImputer(missing_values=np.nan, strategy="most_frequent", copy=True)
+    model_im_mf = ImputerModel(X_train, y_train, c_train, imputer_x, imputer_y)
+
+    # Impute missing values using a constant zero
+    imputer_x = SimpleImputer(missing_values=np.nan, strategy="constant", fill_value=0, copy=True)
+    imputer_y = SimpleImputer(missing_values=np.nan, strategy="constant", fill_value=0, copy=True)
+    model_im_const0 = ImputerModel(X_train, y_train, c_train, imputer_x, imputer_y)
+
+    # Impute missing values using the KNN algorithm
+    imputer_x = KNNImputer(n_neighbors=5, weights="uniform", copy=True)
+    imputer_y = KNNImputer(n_neighbors=5, weights="uniform", copy=True)
+    model_im_knn = ImputerModel(X_train, y_train, c_train, imputer_x, imputer_y)
+
+    # Impute missing values using round-robin linear regression
+    imputer_x = IterativeImputer(max_iter=10, random_state=RANDOM_STATE)
+    imputer_y = IterativeImputer(max_iter=10, random_state=RANDOM_STATE)
+    model_im_iter = ImputerModel(X_train, y_train, c_train, imputer_x, imputer_y)
+
+    print()
+
+    model_isomap = IsomapModel(X_train, y_train, c_train, model_im_mean.imputer_x, model_im_mean.imputer_y)
+    # model_isomap.final_model_evaluation("semisupervised-submission-00")
+
+    return
+
 
 def main():
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
 
-    boosting()
     #nonlinear()
+    imputation()
+    #boosting()
+    print()
+    imputing_unlabeled_y()
 
     return
 
