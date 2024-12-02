@@ -4,10 +4,8 @@ import numpy as np
 import pandas as pd
 import missingno as msno
 import matplotlib.pyplot as plt
-import scipy
 import seaborn as sns
 from joblib import dump, load
-from sklearn.manifold import Isomap
 from sklearn.model_selection import train_test_split, KFold
 from sklearn.linear_model import LinearRegression, Lasso
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
@@ -19,6 +17,8 @@ from sklearn.impute import IterativeImputer, KNNImputer, SimpleImputer
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import make_pipeline
 from catboost import CatBoostRegressor, Pool
+import xgboost as xgb
+from xgboost import XGBModel
 
 from DatasetManipulator import *
 
@@ -330,8 +330,8 @@ class HistGradientBoostingModel(Model):
         return
 
 class CatBoostModel(Model):
-    def __init__(self, X_train, y_train, c_train, X_val, y_val, c_val):
-        super().__init__(X_train, y_train, X_val, y_val, c_train, c_val)
+    def __init__(self, X_train, y_train, c_train):
+        super().__init__(X_train, y_train, None, None, c_train, None)
         self.model = None
         # self.logs()
         self.chosen_hyper_parameters = {
@@ -366,10 +366,10 @@ class CatBoostModel(Model):
         self, X_train, y_train, c_train, X_val, y_val, c_val,
         distname, scale
     ):
-        x_train_frame = self.get_x_treated(self.X_train)
-        y_train_frame = self.get_y_treated(self.y_train, self.c_train)
-        x_val_frame = self.get_x_treated(self.X_val)
-        y_val_frame = self.get_y_treated(self.y_val, self.c_val)
+        x_train_frame = self.get_x_treated(X_train)
+        y_train_frame = self.get_y_treated(y_train, c_train)
+        x_val_frame = self.get_x_treated(X_val)
+        y_val_frame = self.get_y_treated(y_val, c_val)
         self.model = self.get_model(distname, scale)
         train_pool = Pool(x_train_frame, label=y_train_frame, cat_features=self.cat_features)
         val_pool = Pool(x_val_frame, label=y_val_frame, cat_features=self.cat_features)
@@ -384,14 +384,15 @@ class CatBoostModel(Model):
             raise Exception("Some hyperparameters not set!")
         x_train_frame = self.get_x_treated(self.X_train)
         y_train_frame = self.get_y_treated(self.y_train, self.c_train)
-        x_val_frame = self.get_x_treated(self.X_val)
-        y_val_frame = self.get_y_treated(self.y_val, self.c_val)
+        # x_val_frame = self.get_x_treated(self.X_val)
+        # y_val_frame = self.get_y_treated(self.y_val, self.c_val)
         self.model = self.get_model(**self.chosen_hyper_parameters)
 
         # features = x_train_frame.columns.difference(['y_lower', 'y_upper'], sort=False)
         train_pool = Pool(x_train_frame, label=y_train_frame, cat_features=self.cat_features)
-        val_pool = Pool(x_val_frame, label=y_val_frame, cat_features=self.cat_features)
-        self.model.fit(train_pool, eval_set=val_pool, verbose=0)
+        # val_pool = Pool(x_val_frame, label=y_val_frame, cat_features=self.cat_features)
+        # self.model.fit(train_pool, eval_set=val_pool, verbose=0)
+        self.model.fit(train_pool, verbose=0)
 
     def get_x_treated(self, X):
         # X_train = self.normalize_train(self.X_train)
@@ -536,6 +537,91 @@ class IsomapModel(Model):
         X_train = self.normalize_train(X_train)
         self.model = LinearRegression()
         self.model.fit(X_train, self.y_train)
+        return
+
+class XGBoostModel(Model):
+    def __init__(self, X_train, y_train, c_train): #, X_val, y_val, c_val):
+        # super().__init__(X_train, y_train, X_val, y_val, c_train, c_val)
+        super().__init__(X_train, y_train, None, None, c_train, None)
+        self.param = {
+            'objective': 'survival:aft',
+            'eval_metric': 'aft-nloglik',
+            # 'eval_metric': 'rmse',
+            # 'eval_metric': 'interval-regression-accuracy',
+            'aft_loss_distribution': 'extreme',
+            'aft_loss_distribution_scale': 1.2,
+            'tree_method': 'hist', 'learning_rate': 0.5,
+            'max_depth': 1, # 2,
+            'verbosity' : 0
+        }
+        self.chosen_hyper_parameters = {}
+        self.hyper_parameters_options = {
+            # "learning_rate" : [0.05, 0.1, 0.2, 0.5, 0.8, 1, 2, 5, 10],
+            # "tree_method" : ['hist', 'exact'],
+            # "max_depth": [1, 2], # [i for i in range(1, 5+1)],
+            'aft_loss_distribution': ['normal', 'logistic', 'extreme'],
+            'aft_loss_distribution_scale': [1, 1.2, 2], # [1 + i/10 for i in range(0, 10+1, 2)],
+            "num_round" : [6], # [5, 6, 7],
+            # "alpha": [0, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10],
+            "alpha": [0, 0.1, 1, 2, 5, 10, 50],
+            # "lambda": [0, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10],
+            "lambda": [0, 0.05, 0.1, 1, 2, 5, 10],
+        }
+        # self.hyper_parameters_options = {"num_round" : [5]}
+        self.train()
+        self.logs_cv()
+
+    def calculate_cmse_for_kf(
+        self, X_train, y_train, c_train, X_val, y_val, c_val,
+        **parameters
+    ):
+        param = self.param.copy()
+        param.update(parameters)
+        # print(param)
+        dtrain = self.get_d_matrix(X_train, y_train, c_train)
+        dval = self.get_d_matrix(X_val, y_val, c_val)
+        # self.model = xgb.train(self.param, dtrain, num_boost_round=self.num_round, evals=[(dval, 'train')])
+        model = xgb.train(self.param, dtrain, num_boost_round=parameters["num_round"])
+        cmse = error_metric(y_val, model.predict(dval), c_val)
+        # inside__ = "   ".join([f"{k}: {v}" for k,v in parameters.items()])
+        # print(inside__)
+        return cmse
+
+    def get_d_matrix(self, X, y, c):
+        X = self.normalize_train(X)
+        dMatrix = xgb.DMatrix(X, label=y, missing=np.NaN)
+        y_lower_bound = y
+        y_upper_bound = np.where(c == 0, y, +np.inf)
+        dMatrix.set_float_info('label_lower_bound', y_lower_bound)
+        dMatrix.set_float_info('label_upper_bound', y_upper_bound)
+        return dMatrix
+
+    def train(self):
+        self.find_best_hyperparameters()
+        param = self.param.copy()
+        param.update(self.chosen_hyper_parameters)
+        dtrain = self.get_d_matrix(self.X_train, self.y_train, self.c_train)
+        # dval = self.get_d_matrix(self.X_val, self.y_val, self.c_val)
+        # self.model = xgb.train(self.param, dtrain, num_boost_round=self.num_round, evals=[(dval, 'train')])
+        self.model = xgb.train(param, dtrain, num_boost_round=self.chosen_hyper_parameters["num_round"])
+
+    def predict(self, X):
+        pred = self.model.predict(xgb.DMatrix(self.std_scaler.transform(X), missing=np.NaN))
+        # pred = pred*self.y_mult_max + self.y_mult_min
+        return pred
+
+    def __repr__(self):
+        __inside = ''.join([f'   {k}: {v}' for k, v in self.chosen_hyper_parameters.items()])
+        # print(f"NEW BEST!: \n{__inside}   Average Cross-Validation Score: {average_CMSE}")
+        return f"XGBoostModel: model=XGModel w/ {__inside}"
+        # return f"LinearModel: y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
+
+    def final_model_evaluation(self, file_name):
+        X_test = read_x_test()
+        Y_pred = self.predict(X_test.to_numpy())
+        Y_pred = pd.DataFrame(Y_pred, columns=['0'])
+        Y_pred.insert(0, 'id', np.arange(0, len(Y_pred)))
+        Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
         return
 
 
@@ -683,15 +769,24 @@ def imputing_unlabeled_y():
 
     return
 
+def boosting2():
+    (X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
+    # (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_split_dataset()
+    # model = XGBoostModel(X_train, y_train, c_train, X_val, y_val, c_val)
+    model = XGBoostModel(X_train, y_train, c_train)
+    model.final_model_evaluation("optional-01")
+    # model.logs_generic(X_val, y_val, c_val, "validation")
+
+
 
 def main():
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
 
     #nonlinear()
-    imputation()
+    #imputation()
     #boosting()
-    print()
-    imputing_unlabeled_y()
+    # imputing_unlabeled_y()
+    boosting2()
 
     return
 
