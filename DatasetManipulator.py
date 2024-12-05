@@ -12,7 +12,7 @@ TEST_SIZE = 0.1
 VAL_SIZE = 0.1
 RANDOM_STATE = 1954836318 # np.random.randint(0, 1<<31)
 print(f"seed={RANDOM_STATE}")
-N_SPLITS = 20
+N_SPLITS = 100
 
 # Creates a train,validation and test split
 def train_val_test_split(X, y, test_size=TEST_SIZE, val_size=VAL_SIZE, random_state=RANDOM_STATE):

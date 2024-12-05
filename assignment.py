@@ -772,7 +772,7 @@ def boosting2():
     # (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_split_dataset()
     # model = XGBoostModel(X_train, y_train, c_train, X_val, y_val, c_val)
     model = XGBoostModel(X_train, y_train, c_train)
-    model.final_model_evaluation("optional-01")
+    model.final_model_evaluation("optional-submission-01")
     return
 
 
@@ -781,12 +781,12 @@ def main():
     #write_train()
 
     #missingValuesAnalysis(X_train)
-    #nonlinear()
-    #imputation()
-    #boosting()
-    #imputing_unlabeled_y()
+    nonlinear()
+    imputation()
+    boosting()
+    imputing_unlabeled_y()
     imputing_boosting()
-    #boosting2()
+    boosting2()
 
     return
 
