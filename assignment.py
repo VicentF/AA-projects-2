@@ -291,18 +291,20 @@ class HistGradientBoostingModel(Model):
         self.X_train = self.std_scaler.fit_transform(self.X_train)
         self.model = HistGradientBoostingRegressor(l2_regularization=1)
         self.chosen_hyper_parameters = {
-            "l2_lambda": -1
+            "l2_lambda": 2_000_000,
+            "max_features": 0.05
         }
         # self.best_cMSE_cross_validation = 351.9508586445804
         self.hyper_parameters_options = {
-            "l2_lambda": [0, 0.001, 0.01, 0.1, 1, 10]
+            "l2_lambda": [1<<i for i in range(8, 24)],#[10, 20, 50, 100, 200, 500, 1000]
+            "max_features": [0.01, 0.05, 0.1, 0.2, 0.5, 0.8, 1.0]
         }
         self.train()
         self.logs_cv()
         return
 
-    def get_model(self, l2_lambda):
-        return HistGradientBoostingRegressor(l2_regularization=l2_lambda)
+    def get_model(self, l2_lambda, max_features):
+        return HistGradientBoostingRegressor(l2_regularization=l2_lambda, max_features=max_features, early_stopping=True)
 
     def train(self):
         if any(v == -1 for v in self.chosen_hyper_parameters.values()):
@@ -313,10 +315,10 @@ class HistGradientBoostingModel(Model):
         self.model.fit(self.X_train, self.y_train.ravel())
 
     def __repr__(self):
-        return f"HistGradientBoostingModel: model={self.model}, l2_lambda={self.chosen_hyper_parameters['l2_lambda']}"
+        return f"HistGradientBoostingModel (l2_lambda={self.chosen_hyper_parameters['l2_lambda']}, max_features={self.chosen_hyper_parameters['max_features']})"
 
-    def calculate_cmse_for_kf(self, X_train, y_train, c_train, X_val, y_val, c_val, l2_lambda):
-        model = self.get_model(l2_lambda)
+    def calculate_cmse_for_kf(self, X_train, y_train, c_train, X_val, y_val, c_val, l2_lambda, max_features):
+        model = self.get_model(l2_lambda, max_features)
         model.fit(X_train, y_train.ravel())
         cmse = error_metric(y_val, model.predict(X_val), c_val)
         return cmse
@@ -434,11 +436,11 @@ class CatBoostModel(Model):
         return
 
 class ImputerModel(Model):
-    def __init__(self, X_train, y_train, c_train, imputer_x, imputer_y=None):
+    def __init__(self, X_train, y_train, c_train, imputer_x, X_train_all=None):
         super().__init__(X_train, y_train, None, None, c_train, None)
         self.model = LinearRegression()
         self.imputer_x = imputer_x
-        self.imputer_y = imputer_y
+        self.X_train_all = X_train if X_train_all is None else X_train_all
         self.train()
         self.logs_cv()
         return
@@ -447,10 +449,6 @@ class ImputerModel(Model):
         self.imputer_x.fit(X_train)
         X_train = self.imputer_x.transform(X_train)
         X_val = self.imputer_x.transform(X_val)
-        if self.imputer_y is not None:
-            self.imputer_y.fit(y_train)
-            y_train = self.imputer_y.transform(y_train)
-            y_val = self.imputer_y.transform(y_val)
 
         X_train, X_val = self.normalize(X_train, X_val)
         model = LinearRegression()
@@ -461,11 +459,8 @@ class ImputerModel(Model):
     def train(self):
         self.best_cMSE_cross_validation = self.kf_cv()
 
-        self.imputer_x.fit(self.X_train)
+        self.imputer_x.fit(self.X_train_all)
         self.X_train = self.imputer_x.transform(self.X_train)
-        if self.imputer_y is not None:
-            self.imputer_y.fit(self.y_train)
-            self.y_train = self.imputer_y.transform(self.y_train)
 
         self.X_train = self.normalize_train(self.X_train)
         self.model.fit(self.X_train, self.y_train)
@@ -491,12 +486,11 @@ class ImputerModel(Model):
             pass
 
 class IsomapModel(Model):
-    def __init__(self, X_train, y_train, c_train, imputer_x, imputer_y=None, train=True):
+    def __init__(self, X_train, y_train, c_train, imputer_x, train=True):
         super().__init__(X_train, y_train, None, None, c_train, None)
         self.isomap = None
         self.model = LinearRegression()
         self.imputer_x = imputer_x
-        self.imputer_y = imputer_y
         self.n_neighbors = 90
 
         if train:
@@ -514,10 +508,6 @@ class IsomapModel(Model):
         self.imputer_x.fit(X_train)
         X_train = self.imputer_x.transform(X_train)
         X_val = self.imputer_x.transform(X_val)
-        if self.imputer_y is not None:
-            self.imputer_y.fit(y_train)
-            y_train = self.imputer_y.transform(y_train)
-            y_val = self.imputer_y.transform(y_val)
 
         isomap = Isomap(n_neighbors=self.n_neighbors, n_components=X_train.shape[1])
         X_train = isomap.fit_transform(X_train)
@@ -535,9 +525,6 @@ class IsomapModel(Model):
 
         self.imputer_x.fit(self.X_train)
         self.X_train = self.imputer_x.transform(self.X_train)
-        if self.imputer_y is not None:
-            self.imputer_y.fit(self.y_train)
-            self.y_train = self.imputer_y.transform(self.y_train)
 
         self.X_train = self.isomap.fit_transform(self.X_train)
         self.X_train = self.normalize_train(self.X_train)
@@ -731,48 +718,52 @@ def boosting():
 
 # task 4.1
 def imputing_unlabeled_y():
-    (X_train, y_train, c_train), (X_test, y_test, c_test) = read_unaltered_dataset_train_test_full()
+    (X_train_all, y_train_all, c_train_all), (X_test, y_test, c_test) = read_unaltered_dataset_train_test_full()
+    # remove rows with NaN on y
+    mask = np.isnan(y_train_all)
+    X_train = X_train_all[np.repeat(~mask, 7, axis=1)].reshape(-1, 7)
+    y_train = y_train_all[~mask].reshape(-1, 1)
+    c_train = c_train_all[~mask].reshape(-1, 1)
 
     # Impute missing values using the median
     imputer_x = SimpleImputer(missing_values=np.nan, strategy="median", copy=True)
-    imputer_y = SimpleImputer(missing_values=np.nan, strategy="median", copy=True)
-    model_im_median = ImputerModel(X_train, y_train, c_train, imputer_x, imputer_y)
+    model_im_median = ImputerModel(X_train, y_train, c_train, imputer_x, X_train_all)
 
     # Impute missing values using the most frequent value
     imputer_x = SimpleImputer(missing_values=np.nan, strategy="most_frequent", copy=True)
-    imputer_y = SimpleImputer(missing_values=np.nan, strategy="most_frequent", copy=True)
-    model_im_mf = ImputerModel(X_train, y_train, c_train, imputer_x, imputer_y)
+    model_im_mf = ImputerModel(X_train, y_train, c_train, imputer_x, X_train_all)
 
     # Impute missing values using round-robin linear regression
     imputer_x = IterativeImputer(max_iter=20)
-    imputer_y = IterativeImputer(max_iter=20)
-    model_im_iter = ImputerModel(X_train, y_train, c_train, imputer_x, imputer_y)
+    model_im_iter = ImputerModel(X_train, y_train, c_train, imputer_x, X_train_all)
 
     print()
 
-    model_isomap_median = IsomapModel(X_train, y_train, c_train, model_im_median.imputer_x, model_im_median.imputer_y)
-    model_isomap_mf = IsomapModel(X_train, y_train, c_train, model_im_mf.imputer_x, model_im_mf.imputer_y)
-    model_isomap_iter = IsomapModel(X_train, y_train, c_train, model_im_iter.imputer_x, model_im_iter.imputer_y)
+    model_isomap_median = IsomapModel(X_train, y_train, c_train, model_im_median.imputer_x)
+    model_isomap_mf = IsomapModel(X_train, y_train, c_train, model_im_mf.imputer_x)
+    model_isomap_iter = IsomapModel(X_train, y_train, c_train, model_im_iter.imputer_x)
 
     return
 
 # task 4.2
 def imputing_boosting():
-    (X_train, y_train, c_train), (X_test, y_test, c_test) = read_unaltered_dataset_train_test_full()
+    (X_train_all, y_train_all, c_train_all), (X_test, y_test, c_test) = read_unaltered_dataset_train_test_full()
+    # remove rows with NaN on y
+    mask = np.isnan(y_train_all)
+    X_train = X_train_all[np.repeat(~mask, 7, axis=1)].reshape(-1, 7)
+    y_train = y_train_all[~mask].reshape(-1, 1)
+    c_train = c_train_all[~mask].reshape(-1, 1)
 
     # Impute missing values using round-robin linear regression
     imputer_x = IterativeImputer(max_iter=20)
-    imputer_y = IterativeImputer(max_iter=20)
-    imputer_x.fit(X_train)
+    imputer_x.fit(X_train_all)
     X_train = imputer_x.transform(X_train)
-    imputer_y.fit(y_train)
-    y_train = imputer_y.transform(y_train)
 
     model4_2_hist = HistGradientBoostingModel(X_train, y_train, c_train)
-    #model4_2_hist.final_model_evaluation("semisupervised-submission-00")
+    model4_2_hist.final_model_evaluation("semisupervised-submission-00")
 
     model4_2_cat = CatBoostModel(X_train, y_train, c_train)
-    #model4_2_cat.final_model_evaluation("semisupervised-submission-01")
+    model4_2_cat.final_model_evaluation("semisupervised-submission-01")
     return
 
 #task 5
@@ -782,13 +773,14 @@ def boosting2():
     # model = XGBoostModel(X_train, y_train, c_train, X_val, y_val, c_val)
     model = XGBoostModel(X_train, y_train, c_train)
     model.final_model_evaluation("optional-01")
-    # model.logs_generic(X_val, y_val, c_val, "validation")
+    return
 
 
 
 def main():
-    (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
+    #write_train()
 
+    #missingValuesAnalysis(X_train)
     #nonlinear()
     #imputation()
     #boosting()
