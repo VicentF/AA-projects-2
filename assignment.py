@@ -616,6 +616,62 @@ class XGBoostModel(Model):
         Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
         return
 
+# y-yhat plotting for a single output
+def plot_y_yhat(Y_test, y_pred, plot_title="plot"):
+    plt.figure(figsize=(6, 6))
+    x0 = np.min(Y_test)
+    x1 = np.max(Y_test)
+    plt.scatter(Y_test, y_pred, label="Predictions", alpha=0.7)
+    plt.xlabel('True Values')
+    plt.ylabel('Predicted Values')
+    plt.plot([x0, x1], [x0, x1], color='red', label='Ideal Fit')
+    plt.axis('square')
+    plt.title("True vs Predicted")
+    plt.legend()
+    plt.savefig("plots/" + plot_title + '.png')
+    plt.show()
+    return
+
+def summarize_model_errors_cMSE(model, y_test, X_test, c_test):
+    model_predictions = model.predict(X_test)
+    cMSE = error_metric(y_test, model_predictions, c_test)
+
+    model_errors = (y_test - model_predictions)  # Raw errors
+    model_stats = {
+        "Model": model.__repr__(),
+        "Max Error": np.max(model_errors),
+        "Min Error": np.min(model_errors),
+        "Mean Error": np.mean(model_errors),
+        "Std Dev Error": np.std(model_errors),
+        "cMSE": cMSE,
+    }
+
+    # Create stats table
+    stats_table = pd.DataFrame([model_stats])
+
+    # Print stats to console
+    print(stats_table)
+
+    # Plot and save table as PNG
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.axis('tight')
+    ax.axis('off')
+    table = ax.table(
+        cellText=stats_table.values,
+        colLabels=stats_table.columns,
+        cellLoc='center',
+        loc='center'
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.auto_set_column_width(col=list(range(len(stats_table.columns))))
+
+    plt.title("Model Error Statistics (Including cMSE)", fontsize=12)
+    plt.savefig("Plots/Model_Error_Statistics_cMSE.png")
+    plt.show()
+
+    return stats_table
+
 
 # Creates the plots used for task 1.1
 def missingValuesAnalysis(df):
@@ -636,34 +692,43 @@ def missingValuesAnalysis(df):
     plt.savefig("Plots/missing_data_dendogram.png", dpi=300, bbox_inches='tight')
     return
 
+
 # task 1.2
 def baseline():
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
     model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=False)
-    model.final_model_evaluation("baseline-submission-02")
-    return
+    #model.final_model_evaluation("baseline-submission-02")
+    summarize_model_errors_cMSE(model, y_val, X_val, c_val)
+    #plot_y_yhat(model.y_val, model.predict(model.X_val), "Baseline_y-yhat_train-test-val")
+
+
+    return model
 
 # task 1.3
 def grad_descent():
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
     model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
     model.final_model_evaluation("cMSE-baseline-submission-02")
-    return
+    plot_y_yhat(model.y_val, model.predict(model.X_val), "GradDescent_y-yhat_train-test-val")
+    return model
 
 # task 2
 def nonlinear():
     #For KNNModel
     (X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
     model = KNNModel(X_train, y_train, c_train, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+    summarize_model_errors_cMSE(model, y_test, X_test, c_test)
     #model.logs_generic(X_test, y_test, c_test, "test")
-    model.final_model_evaluation("Nonlinear-submission-00")
+    #model.final_model_evaluation("Nonlinear-submission-knn")
+    #plot_y_yhat(y_test, model.predict(X_test), "KNN_y-yhat_cross")
 
     #For PolynomialModel
-    (X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
-    model = PolynomialModel(X_train,y_train, c_train, degrees=[1,2,3,4,5,6,7,8,9,10])
+    #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
+    #model = PolynomialModel(X_train,y_train, c_train, degrees=[1,2,3,4,5,6,7,8,9,10])
     #model.logs_generic(X_test, y_test, c_test, "test")
-    model.final_model_evaluation("Nonlinear-submission-01")
-    return
+    #model.final_model_evaluation("Nonlinear-submission-poly")
+    #plot_y_yhat(y_test, model.predict(X_test), "Poly_y-yhat_cross")
+    return model
 
 # task 3.1
 def imputation():
@@ -673,6 +738,7 @@ def imputation():
     imputer = SimpleImputer(missing_values=np.nan, strategy="mean", copy=True)
     model = ImputerModel(X_train, y_train, c_train, imputer)
     model.final_model_evaluation("handle-missing-submission-20")
+    plot_y_yhat(y_test, model.predict(X_test), "Impute_Mean_y-yhat_cross")
 
     # Impute missing values using the median
     imputer = SimpleImputer(missing_values=np.nan, strategy="median", copy=True)
@@ -775,18 +841,20 @@ def boosting2():
     model.final_model_evaluation("optional-submission-01")
     return
 
-
-
 def main():
     #write_train()
 
     #missingValuesAnalysis(X_train)
+    baseline()
+
+    #grad_descent()
+
     nonlinear()
-    imputation()
-    boosting()
-    imputing_unlabeled_y()
-    imputing_boosting()
-    boosting2()
+    #imputation()
+    #boosting()
+    #imputing_unlabeled_y()
+    #imputing_boosting()
+    #boosting2()
 
     return
 
