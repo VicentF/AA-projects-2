@@ -160,29 +160,6 @@ class Model:
             cv_scores.append(cmse)
         return np.mean(cv_scores)
 
-class LinearModelCV(Model):
-    def __init__(self, X_train, y_train, c_train, train=True):
-        super().__init__(X_train, y_train, None, None, c_train, None)
-        self.model = LinearRegression()
-        if train:
-            self.train()
-            self.logs_cv()
-        return
-
-    def train(self):
-        self.best_cMSE_cross_validation = self.kf_cv()
-        super().train()
-        return
-
-    def __repr__(self):
-        return f"LinearModel (CV): y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
-
-    def calculate_cmse_for_kf(self, X_train, y_train, c_train, X_val, y_val, c_val):
-        X_train, X_val = self.normalize(X_train, X_val)
-        self.model.fit(X_train, y_train)
-        y_pred_val = self.model.predict(X_val)
-        return error_metric(y_val, y_pred_val, c_val)
-
 class LinearModelTrainTestVal(Model):
     def __init__(self, X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=False):
         super().__init__(X_train, y_train, X_val, y_val, c_train, c_val)
@@ -201,6 +178,7 @@ class LinearModelTrainTestVal(Model):
         X_1 = np.concatenate([self.X_train, np.ones((self.X_train.shape[0], 1))], axis=1)
         y = self.y_train.reshape(-1, 1)
         c = self.c_train.reshape(-1, 1)
+        #weights = np.zeros((X_1.shape[1], 1))
         weights = np.random.rand(X_1.shape[1], 1)
         for i in range(MAX_ITERATIONS):
             y_hat = X_1 @ weights
@@ -214,6 +192,29 @@ class LinearModelTrainTestVal(Model):
 
     def __repr__(self):
         return f"LinearModel: y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
+
+class LinearModel(Model):
+    def __init__(self, X_train, y_train, c_train, train=True):
+        super().__init__(X_train, y_train, None, None, c_train, None)
+        self.model = LinearRegression()
+        if train:
+            self.train()
+            self.logs_cv()
+        return
+
+    def train(self):
+        self.best_cMSE_cross_validation = self.kf_cv()
+        super().train()
+        return
+
+    def __repr__(self):
+        return f"LinearModel: y=[X 1]*[{np.round(self.model.coef_[0], 4)} {self.model.intercept_}]"
+
+    def calculate_cmse_for_kf(self, X_train, y_train, c_train, X_val, y_val, c_val):
+        X_train, X_val = self.normalize(X_train, X_val)
+        self.model.fit(X_train, y_train)
+        y_pred_val = self.model.predict(X_val)
+        return error_metric(y_val, y_pred_val, c_val)
 
 class PolynomialModel(Model):
     def __init__(self, X_train, y_train, c_train, degrees, train=True):
@@ -306,6 +307,7 @@ class KNNModel(Model):
         self.model = self.get_model(self.chosen_hyper_parameters["k"])
         self.model.fit(X_train, self.y_train)
 
+
 class HistGradientBoostingModel(Model):
     def __init__(self, X_train, y_train, c_train):
         super().__init__(X_train, y_train, None, None, c_train, None)
@@ -354,7 +356,7 @@ class HistGradientBoostingModel(Model):
         return
 
 class CatBoostModel(Model):
-    def __init__(self, X_train, y_train, c_train, imputer=None ):
+    def __init__(self, X_train, y_train, c_train, imputer=None):
         super().__init__(X_train, y_train, None, None, c_train, None)
         self.model = None
         self.imputer = imputer
@@ -406,7 +408,7 @@ class CatBoostModel(Model):
         if any(v == -1 for v in self.chosen_hyper_parameters.values()):
             self.find_best_hyperparameters()
         else:
-            #elf.best_cMSE_cross_validation = self.kf_cv(**self.chosen_hyper_parameters)
+            #self.best_cMSE_cross_validation = self.kf_cv(**self.chosen_hyper_parameters)
             self.best_cMSE_cross_validation = -1
         x_train_frame = self.get_x_treated(self.X_train)
         y_train_frame = self.get_y_treated(self.y_train, self.c_train)
@@ -448,7 +450,6 @@ class CatBoostModel(Model):
 
     def predict(self, X):
         if self.imputer is not None:
-            print("Entered here \n")
             X = self.imputer.transform(X)
         X = self.get_x_treated(X)
         return self.model.predict(X)
@@ -482,6 +483,10 @@ class ImputerModel(Model):
         y_pred_val = model.predict(X_val)
         return error_metric(y_val, y_pred_val, c_val)
 
+    def predict(self, X):
+        X = self.imputer_x.transform(X)
+        return super().predict(X)
+
     def train(self):
         self.best_cMSE_cross_validation = self.kf_cv()
 
@@ -492,10 +497,6 @@ class ImputerModel(Model):
         self.model.fit(self.X_train, self.y_train)
         return
 
-    def predict(self, X):
-        X = self.imputer_x.transform(X)
-        return super().predict(X)
-
     def final_model_evaluation(self, file_name):
         X_test = read_x_test().to_numpy()
         X_test = self.imputer_x.transform(X_test)
@@ -504,7 +505,6 @@ class ImputerModel(Model):
         Y_pred.insert(0, 'id', np.arange(0, len(Y_pred)))
         Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
         return
-
 
     def __repr__(self):
         if isinstance(self.imputer_x, KNNImputer):
@@ -533,7 +533,7 @@ class IsomapModel(Model):
         return f"IsomapModel: n_neighbors={self.n_neighbors} n_components={self.X_train.shape[1]}"
 
     def predict(self, X):
-        return self.model.predict(self.std_scaler.transform(self.isomap.transform(self.imputer_x.transform(X))))
+        return self.model.predict(self.std_scaler.transform(self.isomap.transform(X)))
 
     def calculate_cmse_for_kf(self, X_train, y_train, c_train, X_val, y_val, c_val):
         self.imputer_x.fit(X_train)
@@ -653,61 +653,6 @@ class XGBoostModel(Model):
         Y_pred.to_csv(f'FinalEvaluations/{file_name}.csv', index=False)
         return
 
-# y-yhat plotting for a single output
-def plot_y_yhat(Y_test, y_pred, plot_title="plot"):
-    plt.figure(figsize=(6, 6))
-    x0 = np.min(Y_test)
-    x1 = np.max(Y_test)
-    plt.scatter(Y_test, y_pred, label="Predictions", alpha=0.7)
-    plt.xlabel('True Values')
-    plt.ylabel('Predicted Values')
-    plt.plot([x0, x1], [x0, x1], color='red', label='Ideal Fit')
-    plt.axis('square')
-    plt.title("True vs Predicted")
-    plt.legend()
-    plt.savefig("plots/" + plot_title + '.png')
-    plt.show()
-    return
-
-def summarize_model_errors_cMSE(model, y_test, X_test, c_test):
-    model_predictions = model.predict(X_test)
-    cMSE = error_metric(y_test, model_predictions, c_test)
-
-    model_errors = (y_test - model_predictions)  # Raw errors
-    model_stats = {
-        "Model": model.__repr__(),
-        "Max Error": np.max(model_errors),
-        "Min Error": np.min(model_errors),
-        "Mean Error": np.mean(model_errors),
-        "Std Dev Error": np.std(model_errors),
-        "cMSE": cMSE,
-    }
-
-    # Create stats table
-    stats_table = pd.DataFrame([model_stats])
-
-    # Print stats to console
-    print(stats_table)
-
-    # Plot and save table as PNG
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.axis('tight')
-    ax.axis('off')
-    table = ax.table(
-        cellText=stats_table.values,
-        colLabels=stats_table.columns,
-        cellLoc='center',
-        loc='center'
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.auto_set_column_width(col=list(range(len(stats_table.columns))))
-
-    plt.title("Model Error Statistics (Including cMSE)", fontsize=12)
-    plt.savefig("Plots/Model_Error_Statistics_cMSE.png")
-    plt.show()
-
-    return stats_table
 
 # Creates the plots used for task 1.1
 def missingValuesAnalysis(df):
@@ -733,49 +678,33 @@ def baseline():
     #(X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
     #model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=False)
     #model.final_model_evaluation("baseline-submission-02")
-    #summarize_model_errors_cMSE(model, y_val, X_val, c_val)
-    #plot_y_yhat(model.y_val, model.predict(model.X_val), "Baseline_y-yhat_train-test-val")
 
     (X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
-    model = LinearModelCV(X_train, y_train, c_train)
-    summarize_model_errors_cMSE(model, y_test, X_test, c_test)
-    model.final_model_evaluation("baseline-submission-03-cv")
-    #plot_y_yhat(y_test, model.predict(X_test), "Baseline_y-yhat_CV")
+    model = LinearModel(X_train, y_train, c_train)
 
-    return model
+    return
 
 # task 1.3
 def grad_descent():
     (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_pruned_dataset()
     model = LinearModelTrainTestVal(X_train, y_train, X_val, y_val, c_train, c_val, grad_descent=True)
     model.final_model_evaluation("cMSE-baseline-submission-02")
-    plot_y_yhat(model.y_val, model.predict(model.X_val), "GradDescent_y-yhat_train-test-val")
-    return model
+    return
 
 # task 2
 def nonlinear():
     #For KNNModel
     (X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
-    # k_values = range(1, 21)
-    # for k in k_values:
-    #     print(f"\nTesting KNN with k={k}...")
-    #     model = KNNModel(X_train, y_train, c_train, [k])
-    #     summarize_model_errors_cMSE(model, y_test, X_test, c_test)
-
-    #model = KNNModel(X_train, y_train, c_train, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
-    #summarize_model_errors_cMSE(model, y_test, X_test, c_test)
+    model = KNNModel(X_train, y_train, c_train, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
     #model.logs_generic(X_test, y_test, c_test, "test")
-    #model.final_model_evaluation("Nonlinear-submission-knn")
-    #plot_y_yhat(y_test, model.predict(X_test), "KNN_y-yhat_cross")
+    model.final_model_evaluation("Nonlinear-submission-00")
 
     #For PolynomialModel
-    #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
-    model = PolynomialModel(X_train,y_train, c_train, degrees=[1])
-    summarize_model_errors_cMSE(model, y_test, X_test, c_test)
+    (X_train, y_train, c_train), (X_test, y_test, c_test) = read_pruned_dataset_train_test_full()
+    model = PolynomialModel(X_train,y_train, c_train, degrees=[1,2,3,4,5,6,7,8,9,10])
     #model.logs_generic(X_test, y_test, c_test, "test")
-    #model.final_model_evaluation("Nonlinear-submission-poly")
-    #plot_y_yhat(y_test, model.predict(X_test), "Poly_y-yhat_cross")
-    return model
+    model.final_model_evaluation("Nonlinear-submission-01")
+    return
 
 # task 3.1
 def imputation():
@@ -784,44 +713,50 @@ def imputation():
     # Impute missing values using the mean
     imputer = SimpleImputer(missing_values=np.nan, strategy="mean", copy=True)
     model = ImputerModel(X_train, y_train, c_train, imputer)
+    y_pred = model.predict(X_test)
+    cmse = error_metric(y_test, y_pred, c_test)
+    print(f"cmse = {cmse}")
     #model.final_model_evaluation("handle-missing-submission-20")
-    plot_y_yhat(y_test, model.predict(X_test), "Impute_Mean_y-yhat_cross")
-    summarize_model_errors_cMSE(model, y_test, X_test, c_test)
 
     # Impute missing values using the median
     imputer = SimpleImputer(missing_values=np.nan, strategy="median", copy=True)
     model = ImputerModel(X_train, y_train, c_train, imputer)
+    y_pred = model.predict(X_test)
+    cmse = error_metric(y_test, y_pred, c_test)
+    print(f"cmse = {cmse}")
     #model.final_model_evaluation("handle-missing-submission-21")
-    plot_y_yhat(y_test, model.predict(X_test), "Impute_Median_y-yhat_cross")
-    summarize_model_errors_cMSE(model, y_test, X_test, c_test)
 
     # Impute missing values using the most frequent value
     imputer = SimpleImputer(missing_values=np.nan, strategy="most_frequent", copy=True)
     model = ImputerModel(X_train, y_train, c_train, imputer)
+    y_pred = model.predict(X_test)
+    cmse = error_metric(y_test, y_pred, c_test)
+    print(f"cmse = {cmse}")
     #model.final_model_evaluation("handle-missing-submission-22")
-    plot_y_yhat(y_test, model.predict(X_test), "Impute_Most_Frequent_y-yhat_cross")
-    summarize_model_errors_cMSE(model, y_test, X_test, c_test)
 
     # Impute missing values using a constant zero
     imputer = SimpleImputer(missing_values=np.nan, strategy="constant", fill_value=0, copy=True)
     model = ImputerModel(X_train, y_train, c_train, imputer)
-    #model.final_model_evaluation("handle-missing-submission-23")
-    plot_y_yhat(y_test, model.predict(X_test), "Impute_0_y-yhat_cross")
-    summarize_model_errors_cMSE(model, y_test, X_test, c_test)
+    y_pred = model.predict(X_test)
+    cmse = error_metric(y_test, y_pred, c_test)
+    print(f"cmse = {cmse}")
+    model.final_model_evaluation("handle-missing-submission-33")
 
     # Impute missing values using the KNN algorithm
     imputer = KNNImputer(n_neighbors=5, weights="uniform", copy=True)
     model = ImputerModel(X_train, y_train, c_train, imputer)
+    y_pred = model.predict(X_test)
+    cmse = error_metric(y_test, y_pred, c_test)
+    print(f"cmse = {cmse}")
     #model.final_model_evaluation("handle-missing-submission-24")
-    plot_y_yhat(y_test, model.predict(X_test), "Impute_KNN_y-yhat_cross")
-    summarize_model_errors_cMSE(model, y_test, X_test, c_test)
 
     # Impute missing values using round-robin linear regression
     imputer = IterativeImputer(max_iter=20)
     model = ImputerModel(X_train, y_train, c_train, imputer)
+    y_pred = model.predict(X_test)
+    cmse = error_metric(y_test, y_pred, c_test)
+    print(f"cmse = {cmse}")
     #model.final_model_evaluation("handle-missing-submission-25")
-    plot_y_yhat(y_test, model.predict(X_test), "Impute_RRLinear_y-yhat_cross")
-    summarize_model_errors_cMSE(model, y_test, X_test, c_test)
 
     return
 
@@ -830,17 +765,14 @@ def boosting():
     (X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
     Model3_2 = HistGradientBoostingModel(X_train, y_train, c_train)
     #Model3_2.logs_generic(X_test, y_test, c_test, "test")
-    #Model3_2.final_model_evaluation("handle-missing-submission-10")
-    plot_y_yhat(y_test, Model3_2.predict(X_test), "Hist_y-yhat_cross")
-    summarize_model_errors_cMSE(Model3_2, y_test, X_test, c_test)
+    Model3_2.final_model_evaluation("handle-missing-submission-10")
 
-
+    #(X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
+    #Model3_2_2 = CatBoostModel(X_train,y_train, c_train)
     (X_train, y_train, c_train), (X_test, y_test, c_test) = read_split_dataset_train_test_full()
-    Model3_2_2 = CatBoostModel(X_train,y_train, c_train)
+    Model3_2_2 = CatBoostModel(X_train, y_train, c_train)
     # Model3_2_2.logs_generic(X_test, y_test, c_test, "test")
-    #Model3_2_2.final_model_evaluation("handle-missing-submission-11")
-    plot_y_yhat(y_test, Model3_2_2.predict(X_test), "CatBoost_y-yhat_cross")
-    summarize_model_errors_cMSE(Model3_2_2, y_test, X_test, c_test)
+    Model3_2_2.final_model_evaluation("handle-missing-submission-11")
     return
 
 # task 4.1
@@ -852,42 +784,23 @@ def imputing_unlabeled_y():
     y_train = y_train_all[~mask].reshape(-1, 1)
     c_train = c_train_all[~mask].reshape(-1, 1)
 
-    mask = np.isnan(y_test)
-    cleaned_X_test = X_test[np.repeat(~mask, 7, axis=1)].reshape(-1, 7)
-    cleaned_y_test = y_test[~mask].reshape(-1, 1)
-    cleaned_c_test = c_test[~mask].reshape(-1, 1)
-
     # Impute missing values using the median
     imputer_x = SimpleImputer(missing_values=np.nan, strategy="median", copy=True)
     model_im_median = ImputerModel(X_train, y_train, c_train, imputer_x, X_train_all)
-    plot_y_yhat(cleaned_y_test, model_im_median.predict(cleaned_X_test), "Impute_Median_4.1_y-yhat_cross")
-    summarize_model_errors_cMSE(model_im_median, cleaned_y_test, cleaned_X_test, cleaned_c_test)
 
     # Impute missing values using the most frequent value
     imputer_x = SimpleImputer(missing_values=np.nan, strategy="most_frequent", copy=True)
     model_im_mf = ImputerModel(X_train, y_train, c_train, imputer_x, X_train_all)
-    #plot_y_yhat(cleaned_y_test, model_im_mf.predict(cleaned_X_test), "Impute_most_frequent_4.1_y-yhat_cross")
-    #summarize_model_errors_cMSE(model_im_mf, cleaned_y_test, cleaned_X_test, cleaned_c_test)
 
     # Impute missing values using round-robin linear regression
     imputer_x = IterativeImputer(max_iter=20)
     model_im_iter = ImputerModel(X_train, y_train, c_train, imputer_x, X_train_all)
-    #plot_y_yhat(cleaned_y_test, model_im_iter.predict(cleaned_X_test), "Impute_Iterative_4.1_y-yhat_cross")
-    #summarize_model_errors_cMSE(model_im_iter, cleaned_y_test, cleaned_X_test, cleaned_c_test)
 
-    # print()
+    print()
 
     model_isomap_median = IsomapModel(X_train, y_train, c_train, model_im_median.imputer_x)
-    plot_y_yhat(cleaned_y_test,model_isomap_median.predict(cleaned_X_test), "Isomap_Median_y-yhat_cross")
-    summarize_model_errors_cMSE(model_isomap_median, cleaned_y_test, cleaned_X_test, cleaned_c_test)
-
     model_isomap_mf = IsomapModel(X_train, y_train, c_train, model_im_mf.imputer_x)
-    plot_y_yhat(cleaned_y_test, model_isomap_mf.predict(cleaned_X_test), "Isomap_Most_Frequent_y-yhat_cross")
-    summarize_model_errors_cMSE(model_isomap_mf, cleaned_y_test, cleaned_X_test, cleaned_c_test)
-
     model_isomap_iter = IsomapModel(X_train, y_train, c_train, model_im_iter.imputer_x)
-    plot_y_yhat(cleaned_y_test, model_isomap_iter.predict(cleaned_X_test), "Isomap_Iterative_y-yhat_cross")
-    summarize_model_errors_cMSE(model_isomap_iter, cleaned_y_test, cleaned_X_test, cleaned_c_test)
 
     return
 
@@ -900,27 +813,16 @@ def imputing_boosting():
     y_train = y_train_all[~mask].reshape(-1, 1)
     c_train = c_train_all[~mask].reshape(-1, 1)
 
-    mask = np.isnan(y_test)
-    cleaned_X_test = X_test[np.repeat(~mask, 7, axis=1)].reshape(-1, 7)
-    cleaned_y_test = y_test[~mask].reshape(-1, 1)
-    cleaned_c_test = c_test[~mask].reshape(-1, 1)
-
     # Impute missing values using round-robin linear regression
-    imputer_x = IterativeImputer(max_iter=20)
+    imputer_x = SimpleImputer(missing_values=np.nan, strategy="constant", fill_value=0, copy=True)
     imputer_x.fit(X_train_all)
     X_train = imputer_x.transform(X_train)
 
     model4_2_hist = HistGradientBoostingModel(X_train, y_train, c_train)
-    #model4_2_hist.final_model_evaluation("semisupervised-submission-00")
-    plot_y_yhat(cleaned_y_test, model4_2_hist.predict(cleaned_X_test), "Impute_Hist_4.2_y-yhat_cross")
-    summarize_model_errors_cMSE(model4_2_hist, cleaned_y_test, cleaned_X_test, cleaned_c_test)
+    model4_2_hist.final_model_evaluation("semisupervised-submission-03")
 
-
-    model4_2_cat = CatBoostModel(X_train, y_train, c_train, imputer_x)
-    #model4_2_cat.final_model_evaluation("semisupervised-submission-01")
-    plot_y_yhat(cleaned_y_test, model4_2_cat.predict(cleaned_X_test), "Impute_Cat_4.2_y-yhat_cross")
-    summarize_model_errors_cMSE(model4_2_cat, cleaned_y_test, cleaned_X_test, cleaned_c_test)
-
+    #model4_2_cat = CatBoostModel(X_train, y_train, c_train, imputer=imputer_x)
+    #model4_2_cat.final_model_evaluation("semisupervised-submission-02")
     return
 
 #task 5
@@ -929,17 +831,16 @@ def boosting2():
     # (X_train, y_train, c_train), (X_val, y_val, c_val), (X_test, y_test, c_test) = read_split_dataset()
     # model = XGBoostModel(X_train, y_train, c_train, X_val, y_val, c_val)
     model = XGBoostModel(X_train, y_train, c_train)
-    plot_y_yhat(y_test, model.predict(X_test), "XGBoost_y-yhat_cross")
-    summarize_model_errors_cMSE(model, y_test, X_test, c_test)
-    #model.final_model_evaluation("optional-submission-01")
+    model.final_model_evaluation("optional-submission-07")
     return
+
+
 
 def main():
     #write_train()
 
     #missingValuesAnalysis(X_train)
     #baseline()
-    #grad_descent()
     #nonlinear()
     #imputation()
     #boosting()
